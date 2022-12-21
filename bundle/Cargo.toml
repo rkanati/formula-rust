@@ -1,0 +1,18 @@
+[package]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+name = "bundle"
+
+[dependencies]
+anyhow = "1"
+bytemuck = "1"
+camino = "1"
+image = { version = "0.24", default-features = false, features = ["png"] }
+lz4_flex = "0.9"
+pack-rects = { git = "file:/home/sabi/projects/pack-rects", rev = "52f89f9" }
+rkyv = "0.7"
+ultraviolet = { version = "0.9", features = ["int"] }
+util = { path = "../util" }
+

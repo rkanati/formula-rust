@@ -1,0 +1,32 @@
+[package]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+name = "formula-rust"
+build = "build.rs"
+default-run = "formula-rust"
+
+[dependencies]
+winit = { version = "0.27", default-features = false, features = ["wayland"] }
+glutin = { version = "0.30", default-features = false, features = ["wayland", "egl"] }
+glutin-winit = { version = "0.2", default-features = false, features = ["wayland", "egl"] }
+raw-window-handle = "0.5"
+
+ultraviolet = { version = "0.9", features = ["int"] }
+
+pack-rects = { git = "file:/home/sabi/projects/pack-rects", rev = "52f89f9" }
+image = { version = "0.24", default-features = false, features = ["png"] }
+rkyv = "0.7"
+camino = "1"
+bytemuck = "1"
+
+bundle = { path = "../bundle" }
+
+anyhow = "1"
+
+[build-dependencies]
+gl_generator = "0.14"
+bundle = { path = "../bundle" }
+camino = "1"
+
