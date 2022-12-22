@@ -1,5 +1,5 @@
 [workspace]
-members = ["game", "bundle", "util"]
+members = ["game", "bundle", "util", "formats"]
 
 [workspace.package]
 version = "0.1.0"

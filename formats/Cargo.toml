@@ -1,0 +1,13 @@
+[package]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+name = "formats"
+
+[dependencies]
+image = { version = "0.24", default-features = false, features = ["png"] }
+anyhow = "1"
+bytemuck = "1"
+camino = "1"
+

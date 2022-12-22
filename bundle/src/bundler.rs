@@ -1,3 +1,5 @@
+mod prm;
+
 use {
     crate::bundle,
     anyhow::Result as Anyhow,
@@ -38,20 +40,6 @@ fn parse_trf(trf: &[u8]) -> Vec<RawFace> {
             RawFace{verts, _normal, tex, flags, colour}
         })
         .collect()
-}
-
-fn load_cmp(cmp: &[u8]) -> Anyhow<Vec<image::RgbaImage>> {
-    let n_tims: u32 = read(&cmp[0..4]);
-    let (lens, data) = cmp[4..].split_at(n_tims as usize * 4);
-    let mut tims = crate::lzss::expand(data);
-    lens.array_chunks()
-        .map(|&len| {
-            let len = u32::from_le_bytes(len) as usize;
-            let rest = tims.split_off(len);
-            let tim = std::mem::replace(&mut tims, rest);
-            crate::untim::load_tim(&tim)
-        })
-        .collect::<Result<Vec<_>, _>>()
 }
 
 struct MipMapping {
@@ -175,7 +163,7 @@ fn make_track(
 {
     let start = std::time::Instant::now();
 
-    let lib_images = load_cmp(lib_cmp)?;
+    let lib_images = formats::load_cmp(lib_cmp)?;
     let lib_ttf = parse_ttf(lib_ttf);
     let (image, uvs) = make_atlas(&lib_images, &lib_ttf)?;
 
@@ -230,6 +218,7 @@ pub fn make_bundle(wipeout_dir: &Path) -> Anyhow<Vec<u8>> {
     let bundle_end = std::time::Instant::now();
     eprintln!("BUNDLER: all tracks in {:.3}s", (bundle_end - bundle_start).as_secs_f32());
 
+    // finalize
     let mut buffer = Vec::with_capacity(16 << 20);
     bundle.bake(&mut buffer)?;
     let bake_end = std::time::Instant::now();
