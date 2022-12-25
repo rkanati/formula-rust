@@ -5,7 +5,7 @@ fn main() {
     let out_dir = camino::Utf8PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
     let mut file = std::fs::File::create(out_dir.join("gl_binds.rs")).unwrap();
-    Registry::new(Api::Gles2, (3, 0), Profile::Core, Fallbacks::All, [])
+    Registry::new(Api::Gles2, (3, 2), Profile::Core, Fallbacks::All, [])
         .write_bindings(StructGenerator, &mut file)
         .unwrap();
 

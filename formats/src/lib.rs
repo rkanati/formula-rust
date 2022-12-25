@@ -14,7 +14,6 @@ use {
 // TODO positioning
 
 pub fn load_tim(tim: &[u8]) -> Anyhow<RgbaImage> {
-    dbg!(tim.len());
     if tim[0] != 0x10 || tim[1] != 0x00 {bail!("not a tim")}
     let pixel_type = tim[4] & 3;
     let got_clut = tim[4] & 8 != 0;
@@ -82,7 +81,14 @@ fn rgb15x1_to_rgba8(bits: u16) -> [u8; 4] {
         return [0; 4];
     }
 
-    let chan = |i: u16| ((((bits >> i) & 0x1f) as f32 / 31.).sqrt() * 255.) as u8;
+    let ramp = |y: f32| y;
+
+    let chan = |i: u16| {
+        let y0 = ((bits >> i) & 0x1f) as f32 / 31.;
+        let y1 = ramp(y0);
+        (y1 * 255.) as u8
+    };
+
     let [r, g, b] = [0, 5, 10].map(chan);
     [r, g, b, 255]
 }

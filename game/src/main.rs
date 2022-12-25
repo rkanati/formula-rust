@@ -3,7 +3,7 @@
 mod gl;
 
 use {
-    gl::{Gl, types::{GLenum, GLuint}},
+    gl::{Gl, types::{GLenum, GLuint, GLsizei, GLchar}},
     winit::{
         event_loop::EventLoop,
         window::WindowBuilder,
@@ -19,6 +19,10 @@ use {
     raw_window_handle::HasRawWindowHandle as _,
     ultraviolet as uv,
 };
+
+const TURN_SPEED: f32 = 0.00015;
+const MOVE_SPEED: f32 = 50.;
+const VFOV_DEG: f32 = 57.;
 
 #[derive(Default, Clone, Copy)]
 struct Bipole(i32, i32);
@@ -40,31 +44,26 @@ impl Bipole {
 }
 
 #[derive(Default)]
-struct Control {
+struct ControlMove {
     fore_back: Bipole,
     rigt_left: Bipole,
     fall_rise: Bipole,
 }
 
 fn main() {
+    let track_i: usize = std::env::args().nth(1)
+        .and_then(|arg| arg.parse().ok())
+        .filter(|i: &usize| (1..=14).contains(i))
+        .expect("usage: formula-rust \x1b[3m<track-number 1-14>\x1b[0m");
+
     let bundle = unsafe {
         let compressed = include_bytes!(env!("BUNDLE_PATH"));
         let bytes = bundle::lz4_flex::decompress_size_prepended(compressed).unwrap();
-        /*#[repr(C)] struct W<A, B: ?Sized> { _a: [A; 0], b: B }
-        static BYTES: &'static W<u128, [u8]> 
-           = &W{_a: [], b: *include_bytes!(env!("BUNDLE_PATH"))};
-        let bytes = &BYTES.b;*/
         eprintln!("bundle size: {} MiB compressed, {} MiB expanded",
             compressed.len() >> 20, bytes.len() >> 20);
         let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         rkyv::archived_root::<bundle::Root>(&bytes)
     };
-
-    let track = &bundle.tracks[bundle::asset_id("track11")];
-    let mesh = &bundle.meshes[track.mesh];
-    let atlas = &bundle.atlases[track.atlas];
-    let atlas_image = &bundle.images[atlas.image];
-    let atlas_uvs = &atlas.uvs;
 
     let eloop = EventLoop::new();
 
@@ -92,6 +91,7 @@ fn main() {
     let surf = {
         let (w, h): (u32, u32) = win.inner_size().into();
         let surf_attrs = SurfaceAttributesBuilder::<WindowSurface>::new()
+            .with_srgb(Some(true))
             .build(win_handle, w.try_into().unwrap(), h.try_into().unwrap());
         unsafe {display.create_window_surface(&cfg, &surf_attrs).unwrap()}
     };
@@ -112,40 +112,49 @@ fn main() {
     );
 
     unsafe {
-        gl.Enable(gl::CULL_FACE);
+        gl.DebugMessageCallback(Some(on_gl_debug), std::ptr::null());
+        gl.DebugMessageControl(
+            gl::DONT_CARE,
+            gl::DONT_CARE,
+            gl::DONT_CARE,
+            0, std::ptr::null(),
+            gl::TRUE
+        );
+        gl.Enable(gl::DEBUG_OUTPUT);
+    }
+
+    unsafe {
         //gl.Enable(gl::BLEND);
+        //gl.Enable(gl::FRAMEBUFFER_SRGB);
         gl.Enable(gl::DEPTH_TEST);
         gl.BlendFunc(gl::ONE, gl::ONE_MINUS_SRC_ALPHA);
-        gl.PixelStorei(gl::UNPACK_ALIGNMENT, 0);
+        gl.PixelStorei(gl::UNPACK_ALIGNMENT, 1);
     }
 
     let shader_prog = make_shader_prog(&gl);
-    let vao = make_mesh(&gl, mesh);
-    let tex = make_atlas(&gl, atlas_image, atlas_uvs);
 
-    let fov_deg = 100_f32;
-    let aspect = 16. / 9.;
-    let gl_eye_to_clip = uv::projection::perspective_gl(
-        (fov_deg / aspect).to_radians(),
-        aspect,
-        10.0,
-        1_000_000.0
-    );
+    let track = &bundle.tracks[bundle::asset_id(&format!("track{track_i:02}"))];
 
-    let wo_eye_to_gl_eye = uv::Mat4::from_nonuniform_scale(uv::Vec3::new(1., -1., -1.));
+    let (road_mesh_len, road_vao, road_tex) = {
+        let mesh = &bundle.meshes[track.road_mesh];
+        let image = &bundle.images[track.road_image];
+        let vao = make_mesh(&gl, mesh);
+        let tex = make_texture(&gl, image);
+        (mesh.idxs.len(), vao, tex)
+    };
 
-    let eye_to_clip = gl_eye_to_clip * wo_eye_to_gl_eye;
+    let scenery = Scene::load(&gl, &bundle, track.scenery_scene, track.scenery_image);
+    let sky = Scene::load(&gl, &bundle, track.sky_scene, track.sky_image);
 
-
-    let mut ctrl = Control::default();
+    let mut ctrl_move = ControlMove::default();
     let mut ctrl_pan = 0.;
     let mut ctrl_tilt = 0.;
     let mut ctrl_turning = false;
+    let mut ctrl_fast = false;
 
     let mut cam_pos = uv::Vec3::new(0., 0., 0.);
     let mut cam_tilt = 0.;
     let mut cam_pan = 0.;
-    //let mut cam_turn = uv::Rotor3::default();
 
     eloop.run(move |ev, _, flow| {
         flow.set_poll();
@@ -163,14 +172,16 @@ fn main() {
                     use winit::event::VirtualKeyCode as Vk;
                     let pressed = input.state == winit::event::ElementState::Pressed;
                     match input.virtual_keycode {
-                        Some(Vk::W) => ctrl.fore_back.pos(pressed),
-                        Some(Vk::S) => ctrl.fore_back.neg(pressed),
+                        Some(Vk::W) => ctrl_move.fore_back.pos(pressed),
+                        Some(Vk::S) => ctrl_move.fore_back.neg(pressed),
 
-                        Some(Vk::D) => ctrl.rigt_left.pos(pressed),
-                        Some(Vk::A) => ctrl.rigt_left.neg(pressed),
+                        Some(Vk::D) => ctrl_move.rigt_left.pos(pressed),
+                        Some(Vk::A) => ctrl_move.rigt_left.neg(pressed),
 
-                        Some(Vk::LControl) => ctrl.fall_rise.pos(pressed),
-                        Some(Vk::Space)    => ctrl.fall_rise.neg(pressed),
+                        Some(Vk::LControl) => ctrl_move.fall_rise.pos(pressed),
+                        Some(Vk::Space)    => ctrl_move.fall_rise.neg(pressed),
+
+                        Some(Vk::LShift) => ctrl_fast = pressed,
 
                         _ => { }
                     }
@@ -204,9 +215,8 @@ fn main() {
             }
 
             Ev::RedrawEventsCleared => {
-                const SPEED: f32 = 0.00015;
-                let pan_intent  = -ctrl_pan as f32 * SPEED;
-                let tilt_intent = -ctrl_tilt as f32 * SPEED;
+                let pan_intent  = -ctrl_pan  as f32 * TURN_SPEED;
+                let tilt_intent = -ctrl_tilt as f32 * TURN_SPEED;
                 ctrl_pan  = 0.;
                 ctrl_tilt = 0.;
                 cam_pan = (cam_pan + pan_intent).fract();
@@ -215,11 +225,35 @@ fn main() {
                 let tilt = uv::Rotor3::from_rotation_yz(cam_tilt * std::f32::consts::TAU);
                 let cam_turn = pan * tilt;
 
-                let dx = ctrl.rigt_left.eval() as f32;
-                let dy = ctrl.fall_rise.eval() as f32;
-                let dz = ctrl.fore_back.eval() as f32;
+                let dx = ctrl_move.rigt_left.eval() as f32;
+                let dy = ctrl_move.fall_rise.eval() as f32;
+                let dz = ctrl_move.fore_back.eval() as f32;
                 let move_intent = cam_turn * uv::Vec3::new(dx, 0., dz) + uv::Vec3::new(0., dy, 0.);
-                cam_pos += move_intent * 200.;
+                cam_pos += move_intent * MOVE_SPEED * if ctrl_fast {4.} else {1.};
+
+                let size = win.inner_size();
+                let w = size.width as i32;//surf.width().unwrap() as i32;
+                let h = size.height as i32;//surf.height().unwrap() as i32;
+
+                let eye_to_clip = {
+                    let aspect = w as f32 / h as f32;
+                    let gl_eye_to_clip = uv::projection::perspective_gl(
+                        VFOV_DEG.to_radians(),
+                        aspect,
+                        10.0,
+                        1_000_000.0
+                    );
+
+                    let wo_eye_to_gl_eye = uv::Mat4::from_nonuniform_scale(
+                        uv::Vec3::new(1., -1., -1.)
+                    );
+
+                    gl_eye_to_clip * wo_eye_to_gl_eye
+                };
+
+                let sky_to_clip
+                    = eye_to_clip
+                    * cam_turn.reversed().into_matrix().into_homogeneous();
 
                 let world_to_clip
                     = eye_to_clip
@@ -230,18 +264,25 @@ fn main() {
                     gl.ClearColor(0.04, 0.0, 0.08, 1.);
                     gl.Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
 
-                    let size = win.inner_size();
-                    let w = size.width as i32;//surf.width().unwrap() as i32;
-                    let h = size.height as i32;//surf.height().unwrap() as i32;
                     gl.Viewport(0, 0, w, h);
 
                     gl.UseProgram(shader_prog);
-                    gl.UniformMatrix4fv(0, 1, gl::FALSE, world_to_clip.as_ptr() as _);
 
-                    gl.BindVertexArray(vao);
+                    gl.DepthMask(gl::FALSE);
+
+                    gl.UniformMatrix4fv(0, 1, gl::FALSE, sky_to_clip.as_ptr() as _);
+                    sky.draw(&gl);
+
+                    gl.DepthMask(gl::TRUE);
+                    gl.UniformMatrix4fv(0, 1, gl::FALSE, world_to_clip.as_ptr() as _);
+                    scenery.draw(&gl);
+
+                    gl.BindVertexArray(road_vao);
+                    gl.BindTexture(gl::TEXTURE_2D, road_tex);
+                    gl.Uniform3f(4, 0., 0., 0.);
                     gl.DrawElements(
                         gl::TRIANGLES,
-                        mesh.idxs.len() as _,
+                        road_mesh_len as _,
                         gl::UNSIGNED_INT,
                         std::ptr::null(),
                     );
@@ -265,6 +306,19 @@ fn make_shader_prog(gl: &Gl) -> GLuint {
         gl.AttachShader(prog, vs);
         gl.AttachShader(prog, fs);
         gl.LinkProgram(prog);
+
+        let mut log_len = 0;
+        gl.GetProgramiv(prog, gl::INFO_LOG_LENGTH, &mut log_len as _);
+        if log_len > 0 {
+            let mut buf = Vec::with_capacity(log_len as usize);
+            buf.resize(log_len as usize + 1, 0u8);
+            gl.GetProgramInfoLog(prog, log_len, std::ptr::null_mut(), buf.as_ptr() as _);
+            eprintln!("program link log:");
+            buf.split(|&ch| ch == b'\n')
+                .for_each(|line| eprintln!("> {}", std::str::from_utf8(line).unwrap_or("???")));
+            eprintln!();
+        }
+
         gl.DeleteShader(vs);
         gl.DeleteShader(fs);
         prog
@@ -338,7 +392,7 @@ fn make_mesh(gl: &Gl, mesh: &bundle::ArchivedMesh) -> GLuint {
     }
 }
 
-fn make_atlas(gl: &Gl, image: &bundle::ArchivedImage, uvs: &[[f32; 4]]) -> GLuint {
+fn make_texture(gl: &Gl, image: &bundle::ArchivedImage) -> GLuint {
     unsafe {
         let mut tex = 0u32;
         gl.GenTextures(1, &mut tex as _);
@@ -354,6 +408,56 @@ fn make_atlas(gl: &Gl, image: &bundle::ArchivedImage, uvs: &[[f32; 4]]) -> GLuin
         gl.TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR  as i32);
         gl.TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
         tex
+    }
+}
+
+extern "system" fn on_gl_debug(
+    _source: GLenum,
+    _ty:     GLenum,
+    _id:     GLuint,
+    _level:  GLenum,
+    length:  GLsizei,
+    message: *const GLchar,
+    _user:   *mut std::ffi::c_void)
+{
+    let bytes = unsafe { std::slice::from_raw_parts(message as *const u8, length as usize) };
+    let msg = std::str::from_utf8(bytes)
+        .unwrap_or("<error parsing debug message>");
+    eprintln!("gl: {msg}");
+}
+
+struct Scene<'a> {
+    objs: &'a [bundle::ArchivedSceneObject],
+    vao: GLuint,
+    tex: GLuint,
+}
+
+impl<'a> Scene<'a> {
+    fn load(gl: &Gl, bundle: &'a bundle::ArchivedRoot, scene: bundle::Id, image: bundle::Id) -> Self {
+        let scene = &bundle.scenes[scene];
+        let image = &bundle.images[image];
+        let mesh = &bundle.meshes[scene.mesh];
+        let objs = &scene.objects[..];
+        let vao = make_mesh(&gl, mesh);
+        let tex = make_texture(&gl, image);
+        Scene{objs, vao, tex}
+    }
+
+    fn draw(&self, gl: &Gl) {
+        unsafe {
+            gl.BindVertexArray(self.vao);
+            gl.BindTexture(gl::TEXTURE_2D, self.tex);
+            for &bundle::ArchivedSceneObject{xyz, start, count} in self.objs {
+                let [x, y, z] = xyz.map(|x| x as f32);
+                gl.Uniform3f(4, x, y, z);
+                gl.DrawElements(
+                    gl::TRIANGLES,
+                    count as _,
+                    gl::UNSIGNED_INT,
+                    (start * 4) as _
+                );
+            }
+        }
     }
 }
 
