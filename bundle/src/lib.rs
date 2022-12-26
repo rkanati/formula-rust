@@ -3,6 +3,7 @@
 #![feature(iter_array_chunks)]
 #![feature(iter_collect_into)]
 #![feature(slice_take)]
+#![feature(try_blocks)]
 
 mod bundle;
 pub use bundle::*;

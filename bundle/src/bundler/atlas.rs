@@ -7,6 +7,8 @@ use {
     util::row_major,
 };
 
+const N_REDUCTIONS: usize = 4;
+
 pub struct Atlas {
     scales: uv::Vec4,
     uivis: Vec<uv::Vec4>,
@@ -26,17 +28,15 @@ impl Atlas {
         self.uivis[index] * self.scales
     }
 
-    pub fn make(images: &[RgbaImage]) -> Anyhow<(bundle::Image, Atlas)> {
-        // TODO generate mipmaps; padding etc
-
+    pub fn make(label: &str, images: &[RgbaImage]) -> Anyhow<(bundle::Image, Atlas)> {
         // allocate atlas regions for textures
         let mut packer = RectPacker::new([1024; 2]);
         let rects = images.iter()
             .map(|image| {
-                let w = image.width() as i32;
-                let h = image.height() as i32;
-                let rect = packer.pack_now([w, h]).unwrap();
-                rect
+                const APRON: i32 = 1 << N_REDUCTIONS;
+                let w = APRON * 2 + image.width() as i32;
+                let h = APRON * 2 + image.height() as i32;
+                packer.pack_now([w, h]).unwrap()
             })
             .collect::<Vec<_>>();
 
@@ -46,27 +46,34 @@ impl Atlas {
             .reduce(|a, b| a.zip(b).map(|(a, b)| a.max(b)))
             .unwrap()
             .map(|x| x as u32);
-
-        // uv-coordinate scales based on atlas size
-        //let uv_scale = uv::Vec4::from([wide, high, wide, high].map(|x| 1. / x as f32));
-        let mut atlas = RgbaImage::from_pixel(wide, high, Rgba([255,0,255,255]));
+        let mut atlas = RgbaImage::from_fn(
+            wide, high,
+            |x, y| if ((x >> N_REDUCTIONS) + (y >> N_REDUCTIONS)) & 1 == 0 {
+                Rgba([255,0,255,255])
+            }
+            else {
+                Rgba([0,255,255,255])
+            }
+        );
 
         // blit texture images into atlas
         let uivis = rects.iter().enumerate()
-            .map(|(image_i, &rect)| {
-                let [x, y] = rect.mins().map(|x| x as u32);
+            .map(|(image_i, &dst_rect)| {
                 let src = &images[image_i as usize];
-                atlas.copy_from(src, x, y);
-
-                let rect = uv::IVec4::from(rect.corners());
-                rect.into()//(uv::Vec4::from(rect) * uv_scale).into()
+                let src_rect = blit_with_apron(&mut atlas, dst_rect, &src);
+                let rect = uv::IVec4::from(src_rect.corners());
+                rect.into()
             })
             .collect::<Vec<_>>();
+
+        atlas.save(&format!("debug-out/atlas-{label}.png"))?;
+
+        let levels = generate_levels(atlas);
 
         let image = bundle::Image {
             wide: wide as u16,
             high: high as u16,
-            levels: vec![atlas.into_raw()],
+            levels,
         };
 
         let scales = {
@@ -78,7 +85,7 @@ impl Atlas {
         Ok((image, Atlas{scales, uivis}))
     }
 
-    pub fn make_for_road(fragments: &[RgbaImage], mip_mappings: &[MipMapping])
+    pub fn make_for_road(label: &str, fragments: &[RgbaImage], mip_mappings: &[MipMapping])
         -> Anyhow<(bundle::Image, Atlas)>
     {
         let frag_dims = {
@@ -106,7 +113,7 @@ impl Atlas {
             })
             .collect::<Anyhow<Vec<_>>>()?;
 
-        Self::make(&images)
+        Self::make(label, &images)
     }
 }
 
@@ -126,5 +133,38 @@ pub fn parse_ttf(ttf: &[u8]) -> Vec<MipMapping> {
             lo: [is[20]],*/
         })
         .collect()
+}
+
+fn blit_with_apron(dst: &mut RgbaImage, dst_rect: Rect, src: &RgbaImage) -> Rect {
+    let dst_mins = uv::IVec2::from(dst_rect.mins());
+    let dst_dims = uv::IVec2::from(dst_rect.dims());
+    let src_dims = uv::IVec2::new(src.width() as i32, src.height() as i32);
+    let src_offset = (dbg!(dst_dims) - dbg!(src_dims)) / 2;
+
+    for dst_rel in row_major(0..dst_dims.x, 0..dst_dims.y).map(uv::IVec2::from) {
+        let src_abs = (dst_rel - src_offset)
+            .clamped(uv::IVec2::one()*0, src_dims - 1*uv::IVec2::one());
+        let dst_abs = dst_mins + dst_rel;
+        dst.put_pixel(
+            dst_abs.x as u32, dst_abs.y as u32,
+            *src.get_pixel(src_abs.x as u32, src_abs.y as u32)
+        );
+    }
+
+    let src_mins = dst_mins + src_offset;
+    Rect::with_dims(src_mins.into(), src_dims.into())
+}
+
+fn generate_levels(mut image: RgbaImage) -> Vec<Vec<u8>> {
+    let mut levels = vec![image.to_vec()];
+    for _ in 0..N_REDUCTIONS {
+        image = image::imageops::resize(
+            &image,
+            image.width() / 2, image.height() / 2,
+            image::imageops::FilterType::Triangle
+        );
+        levels.push(image.to_vec());
+    }
+    levels
 }
 

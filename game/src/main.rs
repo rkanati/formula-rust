@@ -51,18 +51,16 @@ struct ControlMove {
 }
 
 fn main() {
-    let track_i: usize = std::env::args().nth(1)
-        .and_then(|arg| arg.parse().ok())
-        .filter(|i: &usize| (1..=14).contains(i))
-        .expect("usage: formula-rust \x1b[3m<track-number 1-14>\x1b[0m");
+    let track_name = std::env::args().nth(1)
+        .expect("usage: formula-rust \x1b[3m<track-name>\x1b[0m");
 
-    let bundle = unsafe {
+    let bundle = {
         let compressed = include_bytes!(env!("BUNDLE_PATH"));
         let bytes = bundle::lz4_flex::decompress_size_prepended(compressed).unwrap();
         eprintln!("bundle size: {} MiB compressed, {} MiB expanded",
             compressed.len() >> 20, bytes.len() >> 20);
         let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        rkyv::archived_root::<bundle::Root>(&bytes)
+        unsafe { rkyv::archived_root::<bundle::Root>(&bytes) }
     };
 
     let eloop = EventLoop::new();
@@ -133,7 +131,7 @@ fn main() {
 
     let shader_prog = make_shader_prog(&gl);
 
-    let track = &bundle.tracks[bundle::asset_id(&format!("track{track_i:02}"))];
+    let track = &bundle.tracks[bundle::asset_id(&track_name)];
 
     let (road_mesh_len, road_vao, road_tex) = {
         let mesh = &bundle.meshes[track.road_mesh];
@@ -144,7 +142,9 @@ fn main() {
     };
 
     let scenery = Scene::load(&gl, &bundle, track.scenery_scene, track.scenery_image);
-    let sky = Scene::load(&gl, &bundle, track.sky_scene, track.sky_image);
+    //let sky = if let (Some(scene), Some(image)) = (track.sky_scene, track.sky_image) {
+    let sky = track.sky.as_ref()
+        .map(|&(scene, image)| Scene::load(&gl, &bundle, scene, image));
 
     let mut ctrl_move = ControlMove::default();
     let mut ctrl_pan = 0.;
@@ -268,10 +268,11 @@ fn main() {
 
                     gl.UseProgram(shader_prog);
 
-                    gl.DepthMask(gl::FALSE);
-
-                    gl.UniformMatrix4fv(0, 1, gl::FALSE, sky_to_clip.as_ptr() as _);
-                    sky.draw(&gl);
+                    if let Some(sky) = &sky {
+                        gl.DepthMask(gl::FALSE);
+                        gl.UniformMatrix4fv(0, 1, gl::FALSE, sky_to_clip.as_ptr() as _);
+                        sky.draw(&gl);
+                    }
 
                     gl.DepthMask(gl::TRUE);
                     gl.UniformMatrix4fv(0, 1, gl::FALSE, world_to_clip.as_ptr() as _);
@@ -397,16 +398,30 @@ fn make_texture(gl: &Gl, image: &bundle::ArchivedImage) -> GLuint {
         let mut tex = 0u32;
         gl.GenTextures(1, &mut tex as _);
         gl.BindTexture(gl::TEXTURE_2D, tex);
-        gl.TexImage2D(
-            gl::TEXTURE_2D, 0,
-            gl::RGBA8 as i32,
-            image.wide as i32, image.high as i32,
-            0,
-            gl::RGBA, gl::UNSIGNED_BYTE,
-            image.levels[0].as_ptr() as _
-        );
-        gl.TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR  as i32);
-        gl.TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::NEAREST as i32);
+        let params = [
+            (gl::TEXTURE_MIN_FILTER, gl::LINEAR_MIPMAP_LINEAR),
+            (gl::TEXTURE_MAG_FILTER, gl::NEAREST),
+            (gl::TEXTURE_MAX_LEVEL,  image.levels.len() as u32 - 1),
+            (gl::TEXTURE_WRAP_S,     gl::CLAMP_TO_EDGE),
+            (gl::TEXTURE_WRAP_T,     gl::CLAMP_TO_EDGE),
+            (gl::TEXTURE_MAX_ANISOTROPY_EXT, 8),
+            //(gl::TEXTURE_M,     gl::CLAMP_TO_EDGE),
+        ];
+        for (pn, pv) in params { gl.TexParameteri(gl::TEXTURE_2D, pn, pv as i32); }
+
+        for (level_i, level) in image.levels.iter().enumerate() {
+            gl.TexImage2D(
+                gl::TEXTURE_2D,
+                level_i as _,
+                gl::RGBA8 as i32,
+                image.wide as i32 >> level_i,
+                image.high as i32 >> level_i,
+                0,
+                gl::RGBA, gl::UNSIGNED_BYTE,
+                level.as_ptr() as _
+            );
+        }
+
         tex
     }
 }

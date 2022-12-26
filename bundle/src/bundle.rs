@@ -105,8 +105,7 @@ pub struct Track {
     pub road_image: Id,
     pub scenery_scene: Id,
     pub scenery_image: Id,
-    pub sky_scene: Id,
-    pub sky_image: Id,
+    pub sky: Option<(Id, Id)>,
 }
 
 

@@ -16,10 +16,10 @@ impl Prm {
         let mut objects = Vec::new();
         let mut mesh = bundle::Mesh::default();
         while !cursor.is_empty() {
-            let object = load_object(cursor, &mut mesh, atlas)
+            let offset = bytes.len() - cursor.len();
+            let object = load_object(bytes.len(), cursor, &mut mesh, atlas)
                 .map_err(|e| anyhow!(e))
-                .context(format!("prm offset: {}", bytes.len() - cursor.len()))
-                ?;
+                .with_context(|| format!("prm offset: {offset:#0x}"))?;
             objects.push(object);
         }
 
@@ -27,7 +27,7 @@ impl Prm {
     }
 }
 
-fn load_object(bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas: &Atlas)
+fn load_object(prm_len: usize, bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas: &Atlas)
     -> Anyhow<bundle::SceneObject>
 {
     let cursor = &mut *bytes;
@@ -38,13 +38,15 @@ fn load_object(bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas: &Atlas)
     let start = mesh.idxs.len() as u32;
 
     for _ in 0..raw_object.n_prims.get() {
-        let ty = RawPrimType::parse(grab(cursor)?)?;
+        let off = prm_len - cursor.len();
+        let raw_ty = grab(cursor)?;
+        let ty = RawPrimType::parse(raw_ty)?;
         let flags: Be<u16> = grab(cursor)?;
-        let flags = flags.get();
+        let _flags = flags.get();
 
-        match dbg!(ty) {
-            RawPrimType::Poly{quad, textured, smooth, lit} => {
-                assert!(!lit);
+        eprintln!("+{off:#x}: {ty:?}");
+        match ty {
+            RawPrimType::Poly{quad, textured, smooth} => {
                 let n_verts = if quad {4} else {3};
                 let n_smooth = if smooth {n_verts} else {1};
 
@@ -97,6 +99,10 @@ fn load_object(bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas: &Atlas)
 
             RawPrimType::Tspr | RawPrimType::Bspr => {
                 let _sprite: RawSprite = grab(cursor)?;
+            }
+
+            RawPrimType::Pad => {
+                let _: [u16; 7] = grab(cursor)?;
             }
 
             _ => todo!("other prim types"),
@@ -164,7 +170,7 @@ struct Be<T>(T) where T: Pod;
 
 impl<T> std::fmt::Debug for Be<T> where T: Pod + std::fmt::Debug {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Be({:?})", self.get())
+        write!(f, "{:?} (be)", self.get())
     }
 }
 
@@ -213,25 +219,23 @@ struct RawSVector([Be<i16>; 4]);
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct RawRgbx([u8; 4]);
 
-type DummyPtr = u32;
-
 impl RawRgbx {
-    const MAGENTA: Self = Self([0xff, 0x00, 0xff, 0xff]);
+    const MAGENTA: Self = Self([0x00, 0xff, 0xff, 0xff]);
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, AnyBitPattern)]
 struct RawObject {
-    name: [u8; 16],
-    n_verts: Be<u16>,
-    _pad0: [u8; 14],
-    n_prims: Be<u16>,
+    name: [u8; 16],     //  16
+    n_verts: Be<u16>,   //  18
+    _pad0: [u8; 14],    //  32
+    n_prims: Be<u16>,   //  34
     _pad1: [u8; 25],
-    _pad2: [u8; 25],
-    _rel: [i32; 3],
-    _pad3: [u8; 20],
-    pos: [Be<i32>; 3],
-    _pad4: [u8; 16],
+    _pad2: [u8; 25],    //  84
+    _rel: [i32; 3],     //  96
+    _pad3: [u8; 20],    // 116
+    pos: [Be<i32>; 3],  // 128
+    _pad4: [u8; 16],    // 144
 }
 
 impl std::fmt::Debug for RawObject {
@@ -255,13 +259,13 @@ struct RawSprite {
     color: RawRgbx,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum RawPrimType {
+    Pad,
     Poly {
         quad: bool,
         textured: bool,
         smooth: bool,
-        lit: bool,
     },
     Lines,
     Tspr,
@@ -273,7 +277,7 @@ enum RawPrimType {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("invalid primitive type {0}")]
+#[error("invalid primitive type {0:#x}")]
 struct BadPrimType(u16);
 
 impl RawPrimType {
@@ -288,13 +292,14 @@ impl TryFrom<Be<u16>> for RawPrimType {
         let raw = raw.get();
         use RawPrimType::*;
         let pt = match raw {
-            1..=8 | 12..=19 => {
-                let lit = raw > 8;
-                let raw = if lit {raw - 12} else {raw - 1};
+            0 => Pad,
+
+            1..=8 => {
+                let raw = raw - 1;
                 let textured = raw & 1 != 0;
                 let quad     = raw & 2 != 0;
                 let smooth   = raw & 4 != 0;
-                Poly{quad, textured, smooth, lit}
+                Poly{quad, textured, smooth}
             }
 
             9  => Lines,
