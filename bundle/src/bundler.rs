@@ -32,15 +32,15 @@ pub fn make_bundle(wipeout_dir: impl AsRef<Path>) -> Anyhow<Vec<u8>> {
 }
 
 fn make_sky(bundler: &mut Bundler, track_name: &Path)
-    -> Anyhow<(bundle::Id, bundle::Id)>
+    -> Anyhow<(Rc<bundle::Scene>, Rc<bundle::Image>)>
 {
     let (image, atlas) = bundler.atlas(&track_name.join("sky.cmp"), None)?;
     let scene = bundler.scene(&track_name.join("sky.prm"), &atlas)?;
     Ok((scene, image))
 }
 
-fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<bundle::Id> {
-    let sky = make_sky(bundler, track_name).ok();
+fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<()> {
+    let (sky_scene, sky_image) = make_sky(bundler, track_name)?;
     let (scenery_image, scenery_atlas) = bundler.atlas(&track_name.join("scene.cmp"), None)?;
     let scenery_scene = bundler.scene(&track_name.join("scene.prm"), &scenery_atlas)?;
 
@@ -55,43 +55,39 @@ fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<bundle::Id> {
         let trv = bundler.load(track_name.join("track.trv"))?;
         let trf = bundler.load(track_name.join("track.trf"))?;
         let mesh = road::make_mesh(&trv, &trf, &atlas)?;
-        let mesh = bundler.meshes.add(id, mesh);
+        let mesh = Rc::new(mesh);
+        bundler.meshes.add(id, mesh.clone());
         (mesh, image)
     };
-
 
     let track = bundle::Track {
         road_mesh, road_image,
         scenery_scene, scenery_image,
-        sky,
+        sky_scene, sky_image,
     };
-    Ok(bundler.tracks.add(id, track))
+
+    bundler.tracks.add(id, track);
+    Ok(())
 }
 
 fn make_ships(bundler: &mut Bundler) -> Anyhow<()> {
+    log::info!("making ships");
     let (image, atlas) = bundler.atlas("common/allsh.cmp".into(), None)?;
     let scene = bundler.scene("common/allsh.prm".into(), atlas.as_ref())?;
+    bundler.ship_image = Some(image);
+    bundler.ship_scene = Some(scene);
     Ok(())
 }
 
 struct Bundler {
     wipeout_dir: PathBuf,
-    bundle: bundle::Root,
-    atlas_log: HashMap<u64, (bundle::Id, Rc<Atlas>)>,
-    scene_log: HashMap<u64, bundle::Id>,
-}
+    images: bundle::Assets<(Rc<bundle::Image>, Rc<Atlas>)>,
+    meshes: bundle::Assets<Rc<bundle::Mesh>>,
+    scenes: bundle::Assets<Rc<bundle::Scene>>,
 
-impl std::ops::Deref for Bundler {
-    type Target = bundle::Root;
-    fn deref(&self) -> &Self::Target {
-        &self.bundle
-    }
-}
-
-impl std::ops::DerefMut for Bundler {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.bundle
-    }
+    tracks: bundle::Assets<bundle::Track>,
+    ship_scene: Option<Rc<bundle::Scene>>,
+    ship_image: Option<Rc<bundle::Image>>,
 }
 
 impl Bundler {
@@ -104,25 +100,35 @@ impl Bundler {
 
     fn new(wipeout_dir: impl AsRef<Path>) -> Self {
         let wipeout_dir = wipeout_dir.as_ref().to_owned();
-        let bundle = bundle::Root::default();
-        let atlas_log = HashMap::new();
-        let scene_log = HashMap::new();
-        Bundler{wipeout_dir, bundle, atlas_log, scene_log}
+        let images = bundle::Assets::default();
+        let meshes = bundle::Assets::default();
+        let scenes = bundle::Assets::default();
+        let tracks = bundle::Assets::default();
+        let ship_scene = None;
+        let ship_image = None;
+        Bundler{wipeout_dir, images, meshes, scenes, tracks, ship_scene, ship_image}
     }
 
     fn bake(self) -> Anyhow<Vec<u8>> {
+        let Bundler{tracks, ship_scene, ship_image, ..} = self;
+        let ship_scene = ship_scene.unwrap();
+        let ship_image = ship_image.unwrap();
+        let root = bundle::Root{tracks, ship_scene, ship_image};
         let mut buffer = Vec::with_capacity(128 << 20);
-        self.bundle.bake(&mut buffer)?;
+        root.bake(&mut buffer)?;
         let compressed = lz4_flex::compress_prepend_size(&buffer);
         Ok(compressed)
     }
 
     fn atlas(&mut self, cmp_path: &Path, ttf_path: Option<&Path>)
-        -> Anyhow<(bundle::Id, Rc<Atlas>)>
+        -> Anyhow<(Rc<bundle::Image>, Rc<Atlas>)>
     {
         let cmp = self.load(cmp_path)?;
         let hash = util::fnv1a_64(&cmp);
-        if let Some((id, uvs)) = self.atlas_log.get(&hash) { return Ok((*id, uvs.clone())); }
+        let id = bundle::Id(hash);
+        if let Some((image, atlas)) = self.images.get(id) {
+            return Ok((image.clone(), atlas.clone()));
+        }
 
         let images = formats::load_cmp(&cmp)?;
         let label = format!("{hash:016x}");
@@ -134,24 +140,41 @@ impl Bundler {
         else {
             Atlas::make(&label, &images)?
         };
-
-        let id = bundle::Id(hash);
-        self.bundle.images.add(id, image);
+        let image = Rc::new(image);
         let atlas = Rc::new(atlas);
-        self.atlas_log.insert(hash, (id, atlas.clone()));
-        Ok((id, atlas))
+
+        self.images.add(id, (image.clone(), atlas.clone()));
+        Ok((image, atlas))
     }
 
-    fn scene(&mut self, prm_path: &Path, atlas: &Atlas) -> Anyhow<bundle::Id> {
+    fn scene(&mut self, prm_path: &Path, atlas: &Atlas) -> Anyhow<Rc<bundle::Scene>> {
         let prm = self.load(prm_path)?;
         let hash = util::fnv1a_64(&prm);
-        if let Some(&id) = self.scene_log.get(&hash) { return Ok(id); }
-
         let id = bundle::Id(hash);
+        if let Some(scene) = self.scenes.get(id) {
+            return Ok(scene.clone());
+        }
+
         let prm = Prm::load(&prm, atlas).context(prm_path.to_owned())?;
-        let mesh = self.bundle.meshes.add(id, prm.mesh);
-        let scene = self.bundle.scenes.add(id, bundle::Scene{mesh, objects: prm.objects});
+        let mesh = Rc::new(prm.mesh);
+        self.meshes.add(id, mesh.clone());
+        let scene = Rc::new(bundle::Scene{mesh, objects: prm.objects});
+        self.scenes.add(id, scene.clone());
         Ok(scene)
+    }
+}
+
+#[repr(C, align(4))]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct RawRgbx([u8; 4]);
+
+impl RawRgbx {
+    const MAGENTA: Self = Self([0x80, 0x00, 0x80, 0xff]);
+}
+
+impl From<RawRgbx> for [f32; 3] {
+    fn from(RawRgbx([r,g,b,_]): RawRgbx) -> Self {
+        [r,g,b].map(|x| (x as f32 / 128.))
     }
 }
 

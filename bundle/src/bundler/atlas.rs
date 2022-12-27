@@ -20,6 +20,10 @@ impl Atlas {
         self.uivis
     }
 
+    pub fn no_texture(&self) -> uv::Vec4 {
+        *self.uivis.last().unwrap() * self.scales
+    }
+
     pub fn lookup(&self, index: usize, offset: uv::Vec2) -> uv::Vec2 {
         (self.uivis[index].xy() + offset) * self.scales.xy()
     }
@@ -29,35 +33,46 @@ impl Atlas {
     }
 
     pub fn make(label: &str, images: &[RgbaImage]) -> Anyhow<(bundle::Image, Atlas)> {
+        const ALIGN: i32 = 1 << N_REDUCTIONS;
+
         // allocate atlas regions for textures
         let mut packer = RectPacker::new([1024; 2]);
+
         let rects = images.iter()
             .map(|image| {
-                const APRON: i32 = 1 << N_REDUCTIONS;
-                let w = APRON * 2 + image.width() as i32;
-                let h = APRON * 2 + image.height() as i32;
+                let w = ALIGN * 2 + image.width() as i32;
+                let h = ALIGN * 2 + image.height() as i32;
                 packer.pack_now([w, h]).unwrap()
             })
             .collect::<Vec<_>>();
+
+        // reserve a white area for non-texturing
+        let white_area = packer.pack_now([ALIGN*2; 2]).unwrap();
 
         // make atlas no larger than necessary
         let [wide, high] = rects.iter()
             .map(|rect| rect.maxs())
             .reduce(|a, b| a.zip(b).map(|(a, b)| a.max(b)))
             .unwrap()
-            .map(|x| x as u32);
-        let mut atlas = RgbaImage::from_fn(
-            wide, high,
-            |x, y| if ((x >> N_REDUCTIONS) + (y >> N_REDUCTIONS)) & 1 == 0 {
-                Rgba([255,0,255,255])
-            }
-            else {
-                Rgba([0,255,255,255])
-            }
+            .map(|x| x.next_multiple_of(ALIGN) as u32);
+        let wide = wide.max(white_area.max_x() as u32);
+        let high = high.max(white_area.max_y() as u32);
+
+        let mut atlas = checkerboard(
+            wide, high, N_REDUCTIONS as u32, Rgba([255,0,255,255]), Rgba([0,255,255,255])
         );
 
+        // fill white area
+        row_major(
+                white_area.min_x() .. white_area.max_x(),
+                white_area.min_y() .. white_area.max_y()
+            )
+            .for_each(|(x, y)| {
+                atlas.put_pixel(x as u32, y as u32, [255;4].into());
+            });
+
         // blit texture images into atlas
-        let uivis = rects.iter().enumerate()
+        let mut uivis = rects.iter().enumerate()
             .map(|(image_i, &dst_rect)| {
                 let src = &images[image_i as usize];
                 let src_rect = blit_with_apron(&mut atlas, dst_rect, &src);
@@ -66,9 +81,14 @@ impl Atlas {
             })
             .collect::<Vec<_>>();
 
-        atlas.save(&format!("debug-out/atlas-{label}.png"))?;
+        uivis.push({
+            let uv::IVec2{x, y}
+                = uv::IVec2::from(white_area.mins())
+                + uv::IVec2::from(white_area.dims()) / 2;
+            uv::IVec4::from([x-1, y-1, x, y]).into()
+        });
 
-        let levels = generate_levels(atlas);
+        let levels = generate_levels(label, atlas);
 
         let image = bundle::Image {
             wide: wide as u16,
@@ -139,7 +159,7 @@ fn blit_with_apron(dst: &mut RgbaImage, dst_rect: Rect, src: &RgbaImage) -> Rect
     let dst_mins = uv::IVec2::from(dst_rect.mins());
     let dst_dims = uv::IVec2::from(dst_rect.dims());
     let src_dims = uv::IVec2::new(src.width() as i32, src.height() as i32);
-    let src_offset = (dbg!(dst_dims) - dbg!(src_dims)) / 2;
+    let src_offset = (dst_dims - src_dims) / 2;
 
     for dst_rel in row_major(0..dst_dims.x, 0..dst_dims.y).map(uv::IVec2::from) {
         let src_abs = (dst_rel - src_offset)
@@ -155,16 +175,56 @@ fn blit_with_apron(dst: &mut RgbaImage, dst_rect: Rect, src: &RgbaImage) -> Rect
     Rect::with_dims(src_mins.into(), src_dims.into())
 }
 
-fn generate_levels(mut image: RgbaImage) -> Vec<Vec<u8>> {
-    let mut levels = vec![image.to_vec()];
-    for _ in 0..N_REDUCTIONS {
-        image = image::imageops::resize(
-            &image,
-            image.width() / 2, image.height() / 2,
-            image::imageops::FilterType::Triangle
-        );
-        levels.push(image.to_vec());
+fn reduce(image: &RgbaImage) -> RgbaImage {
+    assert!(image.width()  & 1 == 0, "image dims: {:?}", image.dimensions());
+    assert!(image.height() & 1 == 0, "image dims: {:?}", image.dimensions());
+
+    let rw = image.width()  / 2;
+    let rh = image.height() / 2;
+
+    let pixels: &[[[u8; 4]; 2]] = bytemuck::cast_slice(image.as_ref());
+    let pixels = pixels.chunks(rw as usize)
+        .array_chunks()
+        .flat_map(|[even_row, odd_row]| {
+            even_row.into_iter().zip(odd_row.into_iter())
+                .map(|([a, b], [c, d])| {
+                    [a, b, c, d].into_iter()
+                        .fold(
+                            [0u32; 4],
+                            |a, &p| a.zip(p).map(|(a, p)| a + p as u32)
+                        )
+                        .map(|x| (x / 4) as u8)
+                })
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+
+    RgbaImage::from_vec(rw, rh, pixels).unwrap()
+}
+
+fn generate_levels(label: &str, image: RgbaImage) -> Vec<Vec<u8>> {
+    let mut levels = vec![image];
+    while levels.len() <= N_REDUCTIONS {
+        let image = reduce(levels.last().unwrap());
+        levels.push(image);
     }
-    levels
+
+    for (level_i, level) in levels.iter().enumerate() {
+        let _ = level.save(&format!("debug-out/atlas-{label}-{level_i:02}.tga"));
+    }
+
+    levels.into_iter()
+        .map(|lv| lv.into_vec())
+        .collect()
+}
+
+fn checkerboard(w: u32, h: u32, log2_pitch: u32, a: Rgba<u8>, b: Rgba<u8>) -> RgbaImage {
+    RgbaImage::from_fn(
+        w, h, 
+        |x, y| {
+            let q = ((x >> log2_pitch) + (y >> log2_pitch)) & 1 == 0;
+            if q {a} else {b}
+        }
+    )
 }
 

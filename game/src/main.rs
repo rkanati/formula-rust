@@ -24,45 +24,12 @@ const TURN_SPEED: f32 = 0.00015;
 const MOVE_SPEED: f32 = 50.;
 const VFOV_DEG: f32 = 57.;
 
-#[derive(Default, Clone, Copy)]
-struct Bipole(i32, i32);
-
-impl Bipole {
-    fn pos(&mut self, go: bool) {
-        if go {self.1 = self.0 + 1}
-        else  {self.1 = 0};
-    }
-
-    fn neg(&mut self, go: bool) {
-        if go {self.0 = self.1 + 1}
-        else  {self.0 = 0};
-    }
-
-    fn eval(self) -> i32 {
-        (self.1 - self.0).signum()
-    }
-}
-
-#[derive(Default)]
-struct ControlMove {
-    fore_back: Bipole,
-    rigt_left: Bipole,
-    fall_rise: Bipole,
-}
-
 fn main() {
+    // process arguments
     let track_name = std::env::args().nth(1)
         .expect("usage: formula-rust \x1b[3m<track-name>\x1b[0m");
 
-    let bundle = {
-        let compressed = include_bytes!(env!("BUNDLE_PATH"));
-        let bytes = bundle::lz4_flex::decompress_size_prepended(compressed).unwrap();
-        eprintln!("bundle size: {} MiB compressed, {} MiB expanded",
-            compressed.len() >> 20, bytes.len() >> 20);
-        let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        unsafe { rkyv::archived_root::<bundle::Root>(&bytes) }
-    };
-
+    // bring up graphics
     let eloop = EventLoop::new();
 
     let (win, cfg) = {
@@ -131,20 +98,34 @@ fn main() {
 
     let shader_prog = make_shader_prog(&gl);
 
+    // start loading assets
+    let bundle = {
+        let decomp_start = std::time::Instant::now();
+
+        let compressed = include_bytes!(env!("BUNDLE_PATH"));
+        let bytes = bundle::lz4_flex::decompress_size_prepended(compressed).unwrap();
+        let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        let bundle = bundle::Root::from_bytes(&bytes);
+
+        eprintln!("bundle loaded: {} -> {} MiB; took {}s",
+            compressed.len() >> 20,
+            bytes.len() >> 20,
+            decomp_start.elapsed().as_secs());
+
+        bundle
+    };
+
     let track = &bundle.tracks[bundle::asset_id(&track_name)];
 
     let (road_mesh_len, road_vao, road_tex) = {
-        let mesh = &bundle.meshes[track.road_mesh];
-        let image = &bundle.images[track.road_image];
-        let vao = make_mesh(&gl, mesh);
-        let tex = make_texture(&gl, image);
-        (mesh.idxs.len(), vao, tex)
+        let vao = make_mesh(&gl, &*track.road_mesh);
+        let tex = make_texture(&gl, &*track.road_image);
+        (track.road_mesh.idxs.len(), vao, tex)
     };
 
-    let scenery = Scene::load(&gl, &bundle, track.scenery_scene, track.scenery_image);
-    //let sky = if let (Some(scene), Some(image)) = (track.sky_scene, track.sky_image) {
-    let sky = track.sky.as_ref()
-        .map(|&(scene, image)| Scene::load(&gl, &bundle, scene, image));
+    let scenery = Scene::load(&gl, &*track.scenery_scene, &*track.scenery_image);
+    let sky = Scene::load(&gl, &*track.sky_scene, &*track.sky_image);
+    let ships = Scene::load(&gl, &*bundle.ship_scene, &*bundle.ship_image);
 
     let mut ctrl_move = ControlMove::default();
     let mut ctrl_pan = 0.;
@@ -267,17 +248,21 @@ fn main() {
                     gl.Viewport(0, 0, w, h);
 
                     gl.UseProgram(shader_prog);
+                    gl.Enable(gl::CULL_FACE);
 
-                    if let Some(sky) = &sky {
-                        gl.DepthMask(gl::FALSE);
-                        gl.UniformMatrix4fv(0, 1, gl::FALSE, sky_to_clip.as_ptr() as _);
-                        sky.draw(&gl);
-                    }
+                    gl.DepthMask(gl::FALSE);
+                    gl.UniformMatrix4fv(0, 1, gl::FALSE, sky_to_clip.as_ptr() as _);
+                    sky.draw(&gl);
 
                     gl.DepthMask(gl::TRUE);
                     gl.UniformMatrix4fv(0, 1, gl::FALSE, world_to_clip.as_ptr() as _);
                     scenery.draw(&gl);
 
+                    let ship_params = (0..ships.objs.len())
+                        .map(|i| (i, uv::Vec3::unit_x() * 800. * i as f32));
+                    ships.draw_objects(&gl, ship_params);
+
+                    gl.Disable(gl::CULL_FACE);
                     gl.BindVertexArray(road_vao);
                     gl.BindTexture(gl::TEXTURE_2D, road_tex);
                     gl.Uniform3f(4, 0., 0., 0.);
@@ -296,6 +281,32 @@ fn main() {
             _ => { }
         }
     });
+}
+
+#[derive(Default, Clone, Copy)]
+struct Bipole(i32, i32);
+
+impl Bipole {
+    fn pos(&mut self, go: bool) {
+        if go {self.1 = self.0 + 1}
+        else  {self.1 = 0};
+    }
+
+    fn neg(&mut self, go: bool) {
+        if go {self.0 = self.1 + 1}
+        else  {self.0 = 0};
+    }
+
+    fn eval(self) -> i32 {
+        (self.1 - self.0).signum()
+    }
+}
+
+#[derive(Default)]
+struct ControlMove {
+    fore_back: Bipole,
+    rigt_left: Bipole,
+    fall_rise: Bipole,
 }
 
 fn make_shader_prog(gl: &Gl) -> GLuint {
@@ -378,9 +389,9 @@ fn make_mesh(gl: &Gl, mesh: &bundle::ArchivedMesh) -> GLuint {
         );
 
         let attrs = [
-            (3, gl::INT,           false,  0),
-            (3, gl::UNSIGNED_BYTE, true,  12),
-            (2, gl::FLOAT,         false, 16),
+            (3, gl::INT,   false,  0),
+            (3, gl::FLOAT, false, 12),
+            (2, gl::FLOAT, false, 24),
         ];
 
         let stride = std::mem::size_of_val(&mesh.verts[0]);
@@ -413,11 +424,13 @@ fn make_texture(gl: &Gl, image: &bundle::ArchivedImage) -> GLuint {
             gl.TexImage2D(
                 gl::TEXTURE_2D,
                 level_i as _,
+                //gl::SRGB8_ALPHA8 as i32,
                 gl::RGBA8 as i32,
                 image.wide as i32 >> level_i,
                 image.high as i32 >> level_i,
                 0,
-                gl::RGBA, gl::UNSIGNED_BYTE,
+                gl::RGBA,
+                gl::UNSIGNED_BYTE,
                 level.as_ptr() as _
             );
         }
@@ -448,22 +461,27 @@ struct Scene<'a> {
 }
 
 impl<'a> Scene<'a> {
-    fn load(gl: &Gl, bundle: &'a bundle::ArchivedRoot, scene: bundle::Id, image: bundle::Id) -> Self {
-        let scene = &bundle.scenes[scene];
-        let image = &bundle.images[image];
-        let mesh = &bundle.meshes[scene.mesh];
+    fn load(
+        gl: &Gl,
+    //  bundle: &'a bundle::ArchivedRoot,
+        scene: &'a bundle::ArchivedScene,
+        image: &'a bundle::ArchivedImage,
+    ) -> Self
+    {
         let objs = &scene.objects[..];
-        let vao = make_mesh(&gl, mesh);
-        let tex = make_texture(&gl, image);
+        let vao = make_mesh(&gl, &*scene.mesh);
+        let tex = make_texture(&gl, &*image);
         Scene{objs, vao, tex}
     }
 
-    fn draw(&self, gl: &Gl) {
+    fn draw_objects(&self, gl: &Gl, params: impl IntoIterator<Item = (usize, uv::Vec3)>) {
+        let params = params.into_iter();
         unsafe {
             gl.BindVertexArray(self.vao);
             gl.BindTexture(gl::TEXTURE_2D, self.tex);
-            for &bundle::ArchivedSceneObject{xyz, start, count} in self.objs {
-                let [x, y, z] = xyz.map(|x| x as f32);
+            for (obj_i, translate) in params {
+                let bundle::ArchivedSceneObject{xyz, start, count} = self.objs[obj_i];
+                let uv::Vec3{x, y, z} = translate + uv::Vec3::from(uv::IVec3::from(xyz));
                 gl.Uniform3f(4, x, y, z);
                 gl.DrawElements(
                     gl::TRIANGLES,
@@ -473,6 +491,16 @@ impl<'a> Scene<'a> {
                 );
             }
         }
+    }
+
+    fn draw_object(&self, gl: &Gl, index: usize, translate: uv::Vec3) {
+        self.draw_objects(gl, [(1, translate)])
+    }
+
+    fn draw(&self, gl: &Gl) {
+        let all = (0..self.objs.len())
+            .map(|i| (i, uv::Vec3::zero()));
+        self.draw_objects(gl, all);
     }
 }
 

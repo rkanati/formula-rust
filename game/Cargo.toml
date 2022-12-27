@@ -8,25 +8,23 @@ build = "build.rs"
 default-run = "formula-rust"
 
 [dependencies]
-winit = { version = "0.27", default-features = false, features = ["wayland"] }
+anyhow = "1"
+bundle = { path = "../bundle" }
+bytemuck = "1"
+camino = "1"
 glutin = { version = "0.30", default-features = false, features = ["wayland", "egl"] }
 glutin-winit = { version = "0.2", default-features = false, features = ["wayland", "egl"] }
-raw-window-handle = "0.5"
-
-ultraviolet = { version = "0.9", features = ["int"] }
-
-pack-rects = { git = "file:/home/sabi/projects/pack-rects", rev = "52f89f9" }
 image = { version = "0.24", default-features = false, features = ["png"] }
+pack-rects = { git = "file:/home/sabi/projects/pack-rects", rev = "52f89f9" }
+raw-window-handle = "0.5"
 rkyv = "0.7"
-camino = "1"
-bytemuck = "1"
-
-bundle = { path = "../bundle" }
-
-anyhow = "1"
+ultraviolet = { version = "0.9", features = ["int"] }
+winit = { version = "0.27", default-features = false, features = ["wayland"] }
 
 [build-dependencies]
-gl_generator = "0.14"
 bundle = { path = "../bundle" }
 camino = "1"
+gl_generator = "0.14"
+log = "0.4"
+simplelog = "0.12"
 

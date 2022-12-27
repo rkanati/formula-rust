@@ -18,7 +18,7 @@ struct RawFace {
     _normal: [i16; 3],
     tex:    u8,
     flags:  u8,
-    colour: [u8; 3],
+    colour: super::RawRgbx,
 }
 
 fn parse_trf(trf: &[u8]) -> Vec<RawFace> {
@@ -29,7 +29,7 @@ fn parse_trf(trf: &[u8]) -> Vec<RawFace> {
             let _normal = read::<[i16; 3]>(&raw[8..14]).map(i16::from_be);
             let tex = raw[14];
             let flags = raw[15];
-            let colour = read(&raw[16..19]);
+            let colour = read(&raw[16..20]);
             RawFace{verts, _normal, tex, flags, colour}
         })
         .collect()
@@ -42,8 +42,7 @@ pub fn make_mesh(trv: &[u8], trf: &[u8], atlas: &Atlas) -> Anyhow<bundle::Mesh> 
 
     let verts = faces.iter()
         .flat_map(|face| {
-            let [r, g, b] = face.colour;
-            let rgb = [r, g, b, 255];
+            let rgb = face.colour.into();
 
             let [u0, v0, u1, v1]: [f32; 4] = atlas.lookup_rect(face.tex as usize).into();
             let uvs = [[u1, v0], [u0, v0], [u0, v1], [u1, v1]];

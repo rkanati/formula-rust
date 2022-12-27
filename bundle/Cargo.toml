@@ -10,7 +10,8 @@ anyhow = "1"
 bytemuck = { version = "1", features = ["derive", "extern_crate_std"] }
 camino = "1"
 formats = { path = "../formats" }
-image = { version = "0.24", default-features = false, features = ["png"] }
+image = { version = "0.24", default-features = false, features = ["png", "tga"] }
+log = "0.4"
 lz4_flex = "0.9"
 pack-rects = { git = "file:/home/sabi/projects/pack-rects", rev = "52f89f9" }
 rkyv = "0.7"

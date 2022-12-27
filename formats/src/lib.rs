@@ -77,7 +77,7 @@ fn from_direct(_bs: &[u8], pixel_type: u8) -> Anyhow<RgbaImage> {
 }
 
 fn rgb15x1_to_rgba8(bits: u16) -> [u8; 4] {
-    if (bits >> 15) & 0x01 != 0 {
+    if (bits >> 15) & 0x01 != 0 || (bits & 0x7fff) == 0 {
         return [0; 4];
     }
 

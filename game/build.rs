@@ -2,6 +2,11 @@
 use gl_generator::*;
 
 fn main() {
+    simplelog::SimpleLogger::init(
+        log::LevelFilter::Debug,
+        simplelog::Config::default()
+    ).unwrap();
+
     let out_dir = camino::Utf8PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
     let mut file = std::fs::File::create(out_dir.join("gl_binds.rs")).unwrap();

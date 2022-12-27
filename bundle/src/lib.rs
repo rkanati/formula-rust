@@ -1,5 +1,6 @@
 #![feature(array_chunks)]
 #![feature(array_zip)]
+#![feature(int_roundings)]
 #![feature(iter_array_chunks)]
 #![feature(iter_collect_into)]
 #![feature(slice_take)]

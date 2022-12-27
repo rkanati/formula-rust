@@ -12,6 +12,8 @@ pub struct Prm {
 
 impl Prm {
     pub fn load(bytes: &[u8], atlas: &Atlas) -> Anyhow<Prm> {
+        log::debug!(target: "prm", "loading prm");
+
         let cursor = &mut &bytes[..];
         let mut objects = Vec::new();
         let mut mesh = bundle::Mesh::default();
@@ -31,20 +33,31 @@ fn load_object(prm_len: usize, bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas
     -> Anyhow<bundle::SceneObject>
 {
     let cursor = &mut *bytes;
+
+    log::debug!(target: "prm", "grabbing object at +{off:x}", off = prm_len - cursor.len());
     let raw_object: RawObject = grab(cursor)?;
-    dbg!(&raw_object);
-    let verts: &[RawSVector] = grab_n(raw_object.n_verts.get() as usize, cursor)?;
+    let obj_name = raw_object.name();
+    log::debug!(target: "prm", "object name '{obj_name}'");
+
+    let n_verts = raw_object.n_verts.get() as usize;
+    log::debug!(target: "prm", "{n_verts} vertices at +{off:x}", off = prm_len - cursor.len());
+    let verts: &[RawSVector] = grab_n(n_verts, cursor)?;
 
     let start = mesh.idxs.len() as u32;
 
-    for _ in 0..raw_object.n_prims.get() {
-        let off = prm_len - cursor.len();
-        let raw_ty = grab(cursor)?;
-        let ty = RawPrimType::parse(raw_ty)?;
+    for prim_i in 0..raw_object.n_prims.get() {
+        log::debug!(target: "prm", "grabbing primitive at +{off:x}", off = prm_len - cursor.len());
+        let raw_ty: Be<u16> = grab(cursor)?;
+        let ty = RawPrimType::parse(raw_ty.get())?;
         let flags: Be<u16> = grab(cursor)?;
-        let _flags = flags.get();
+        let flags = flags.get();
+        let one_sided   = flags & 1 != 0;
+        let ship_engine = flags & 2 != 0;
+        let translucent = flags & 4 != 0;
+        log::debug!(target: "prm", "primitive type {raw_ty}: {ty:?}, flags {flags:03b}",
+            raw_ty = raw_ty.get());
 
-        eprintln!("+{off:#x}: {ty:?}");
+        //eprintln!("+{off:#x}: {ty:?}");
         match ty {
             RawPrimType::Poly{quad, textured, smooth} => {
                 let n_verts = if quad {4} else {3};
@@ -62,14 +75,38 @@ fn load_object(prm_len: usize, bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas
                     rel_uivis.map(|off| atlas.lookup(tex, uv::Vec2::from(off.map(|u| u as f32))))
                 }
                 else {
-                    [uv::Vec2::zero(); 4]
+                    [atlas.no_texture().xy(); 4]
                 };
 
-                let mut colors = [RawRgbx::MAGENTA; 4];
+                let mut colors = [super::RawRgbx::MAGENTA; 4];
                 colors[..n_smooth].copy_from_slice(
                     if let Ok(src) = grab_n(n_smooth, cursor) { src }
                     else { let _ = cursor.take(..2); grab_n(n_smooth, cursor)? }
                 );
+
+
+                // XXX debug coloring
+                /*for color in &mut colors {
+                    *color = super::RawRgbx([
+                        if one_sided   {128} else {0},
+                        if ship_engine {128} else {0},
+                        if translucent {128} else {0},
+                        255
+                    ]);
+                }*/
+                for color in &mut colors {
+                    if ship_engine {*color = super::RawRgbx([128, 64, 0, 255]);}
+                }
+
+                /*for color in &mut colors {
+                    let bits = prim_i & 7;
+                    *color = super::RawRgbx([
+                        if bits & 1 != 0 {128} else {0},
+                        if bits & 2 != 0 {128} else {0},
+                        if bits & 4 != 0 {128} else {0},
+                        255
+                    ]);
+                }*/
 
                 let elems = (0..n_verts)
                     .map(|i_vert| {
@@ -82,7 +119,7 @@ fn load_object(prm_len: usize, bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas
                         };
 
                         let uv = uvs[i_vert].into();
-                        let rgb = colors[i_vert as usize % n_smooth].0;
+                        let rgb = colors[i_vert as usize % n_smooth].into();
                         bundle::MeshVert{xyz, uv, rgb}
                     });
 
@@ -90,10 +127,10 @@ fn load_object(prm_len: usize, bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas
                 mesh.verts.extend(elems);
 
                 if quad {
-                    mesh.idxs.extend([0, 1, 3, 0, 2, 3].map(|i| idx_base + i));
+                    mesh.idxs.extend([2, 1, 0, 2, 3, 1].map(|i| idx_base + i));
                 }
                 else {
-                    mesh.idxs.extend([0, 1, 2].map(|i| idx_base + i));
+                    mesh.idxs.extend([2, 1, 0].map(|i| idx_base + i));
                 }
             }
 
@@ -215,14 +252,6 @@ impl From<RawTransform> for uv::Isometry3 {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct RawSVector([Be<i16>; 4]);
 
-#[repr(C, align(4))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-struct RawRgbx([u8; 4]);
-
-impl RawRgbx {
-    const MAGENTA: Self = Self([0x00, 0xff, 0xff, 0xff]);
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, AnyBitPattern)]
 struct RawObject {
@@ -238,10 +267,19 @@ struct RawObject {
     _pad4: [u8; 16],    // 144
 }
 
+impl RawObject {
+    fn name(&self) -> String {
+        String::from_utf8_lossy(&self.name)
+            .trim()
+            .trim_end_matches(|ch: char| !ch.is_ascii_graphic())
+            .into()
+    }
+}
+
 impl std::fmt::Debug for RawObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RawObject")
-            .field("name", &String::from_utf8_lossy(&self.name))
+            .field("name", &self.name())
             .field("n_verts", &self.n_verts)
             .field("n_prims", &self.n_prims)
             .field("pos", &self.pos)
@@ -256,7 +294,7 @@ struct RawSprite {
     width: Be<i16>,
     height: Be<i16>,
     texture: Be<u16>,
-    color: RawRgbx,
+    color: super::RawRgbx,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -281,15 +319,14 @@ enum RawPrimType {
 struct BadPrimType(u16);
 
 impl RawPrimType {
-    fn parse(raw: Be<u16>) -> Result<Self, BadPrimType> {
+    fn parse(raw: u16) -> Result<Self, BadPrimType> {
         raw.try_into()
     }
 }
 
-impl TryFrom<Be<u16>> for RawPrimType {
+impl TryFrom<u16> for RawPrimType {
     type Error = BadPrimType;
-    fn try_from(raw: Be<u16>) -> Result<Self, BadPrimType> {
-        let raw = raw.get();
+    fn try_from(raw: u16) -> Result<Self, BadPrimType> {
         use RawPrimType::*;
         let pt = match raw {
             0 => Pad,
