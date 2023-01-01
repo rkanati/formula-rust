@@ -1,12 +1,12 @@
-mod prm;
 mod atlas;
+mod font;
+mod prm;
 mod road;
 
 use {
     atlas::Atlas,
     prm::Prm,
-    crate::bundle, 
-    std::{collections::HashMap, rc::Rc},
+    std::{rc::Rc, collections::HashMap},
     anyhow::{Result as Anyhow, Context as _},
     camino::{Utf8Path as Path, Utf8PathBuf as PathBuf},
 };
@@ -15,24 +15,46 @@ pub fn make_bundle(wipeout_dir: impl AsRef<Path>) -> Anyhow<Vec<u8>> {
     let wipeout_dir = wipeout_dir.as_ref();
     let mut bundler = Bundler::new(wipeout_dir);
 
-    // tracks
-    for subdir in wipeout_dir.read_dir_utf8()? {
-        let subdir = subdir?;
-        let subdir_name = subdir.file_name();
-        if !subdir_name.starts_with("track") {continue}
-        make_track(&mut bundler, subdir_name.into())
-            .with_context(|| format!("track: '{subdir_name}'"))?;
-    }
-
-    // ships
+    make_fonts(&mut bundler, &wipeout_dir.join("fonts"))?;
+    make_tracks(&mut bundler, wipeout_dir)?;
     make_ships(&mut bundler)?;
 
-    // finalize
     bundler.bake()
 }
 
+fn make_tracks(bundler: &mut Bundler, tracks_dir: &Path) -> Anyhow<()> {
+    log::info!("making tracks");
+    for entry in tracks_dir.read_dir_utf8()? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {continue}
+        let entry_name = entry.file_name();
+        if !entry_name.starts_with("track") {continue}
+        make_track(bundler, entry_name.into())
+            .with_context(|| format!("track: '{entry_name}'"))?;
+    }
+    Ok(())
+}
+
+fn make_fonts(bundler: &mut Bundler, fonts_dir: &Path) -> Anyhow<()> {
+    log::info!("making fonts");
+    for entry in fonts_dir.read_dir_utf8().with_context(|| fonts_dir.to_string())? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {continue}
+        let Some(name) = entry.path().file_stem() else {continue};
+        let ttf = bundler.load(entry.path())?;
+        let font = match font::make_font(&ttf, name) {
+            Err(font::Error::NotAFont) => continue,
+            Err(font::Error::Other(e)) => return Err(e),
+            Ok(font) => font
+        };
+        bundler.fonts.insert(name.to_owned(), font);
+    }
+    log::info!("got {} fonts", bundler.fonts.len());
+    Ok(())
+}
+
 fn make_sky(bundler: &mut Bundler, track_name: &Path)
-    -> Anyhow<(Rc<bundle::Scene>, Rc<bundle::Image>)>
+    -> Anyhow<(Rc<crate::Scene>, Rc<crate::Image>)>
 {
     let (image, atlas) = bundler.atlas(&track_name.join("sky.cmp"), None)?;
     let scene = bundler.scene(&track_name.join("sky.prm"), &atlas)?;
@@ -44,9 +66,7 @@ fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<()> {
     let (scenery_image, scenery_atlas) = bundler.atlas(&track_name.join("scene.cmp"), None)?;
     let scenery_scene = bundler.scene(&track_name.join("scene.prm"), &scenery_atlas)?;
 
-    let id = bundle::asset_id(track_name.as_str());
-
-    let (road_mesh, road_image) = {
+    let (road_mesh, graph, road_image) = {
         let (image, atlas) = bundler.atlas(
             &track_name.join("library.cmp"),
             Some(&track_name.join("library.ttf"))
@@ -54,19 +74,19 @@ fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<()> {
 
         let trv = bundler.load(track_name.join("track.trv"))?;
         let trf = bundler.load(track_name.join("track.trf"))?;
-        let mesh = road::make_mesh(&trv, &trf, &atlas)?;
-        let mesh = Rc::new(mesh);
-        bundler.meshes.add(id, mesh.clone());
-        (mesh, image)
+        let trs = bundler.load(track_name.join("track.trs"))?;
+        let (mesh, graph) = road::make_road(&trv, &trf, &trs, &atlas)?;
+        (mesh, graph, image)
     };
 
-    let track = bundle::Track {
+    let track = crate::Track {
         road_mesh, road_image,
         scenery_scene, scenery_image,
         sky_scene, sky_image,
+        graph,
     };
 
-    bundler.tracks.add(id, track);
+    bundler.tracks.insert(track_name.to_string(), track);
     Ok(())
 }
 
@@ -79,15 +99,17 @@ fn make_ships(bundler: &mut Bundler) -> Anyhow<()> {
     Ok(())
 }
 
+#[derive(Default)]
 struct Bundler {
     wipeout_dir: PathBuf,
-    images: bundle::Assets<(Rc<bundle::Image>, Rc<Atlas>)>,
-    meshes: bundle::Assets<Rc<bundle::Mesh>>,
-    scenes: bundle::Assets<Rc<bundle::Scene>>,
+    images: HashMap<u64, (Rc<crate::Image>, Rc<Atlas>)>,
+    meshes: HashMap<u64, Rc<crate::Mesh>>,
+    scenes: HashMap<u64, Rc<crate::Scene>>,
+    fonts: HashMap<String, crate::Font>,
 
-    tracks: bundle::Assets<bundle::Track>,
-    ship_scene: Option<Rc<bundle::Scene>>,
-    ship_image: Option<Rc<bundle::Image>>,
+    tracks: crate::Assets<crate::Track>,
+    ship_scene: Option<Rc<crate::Scene>>,
+    ship_image: Option<Rc<crate::Image>>,
 }
 
 impl Bundler {
@@ -100,20 +122,15 @@ impl Bundler {
 
     fn new(wipeout_dir: impl AsRef<Path>) -> Self {
         let wipeout_dir = wipeout_dir.as_ref().to_owned();
-        let images = bundle::Assets::default();
-        let meshes = bundle::Assets::default();
-        let scenes = bundle::Assets::default();
-        let tracks = bundle::Assets::default();
-        let ship_scene = None;
-        let ship_image = None;
-        Bundler{wipeout_dir, images, meshes, scenes, tracks, ship_scene, ship_image}
+        Bundler{wipeout_dir, ..Default::default()}
     }
 
     fn bake(self) -> Anyhow<Vec<u8>> {
         let Bundler{tracks, ship_scene, ship_image, ..} = self;
         let ship_scene = ship_scene.unwrap();
         let ship_image = ship_image.unwrap();
-        let root = bundle::Root{tracks, ship_scene, ship_image};
+        let fonts = self.fonts;
+        let root = crate::Root{tracks, ship_scene, ship_image, fonts};
         let mut buffer = Vec::with_capacity(128 << 20);
         root.bake(&mut buffer)?;
         let compressed = lz4_flex::compress_prepend_size(&buffer);
@@ -121,12 +138,11 @@ impl Bundler {
     }
 
     fn atlas(&mut self, cmp_path: &Path, ttf_path: Option<&Path>)
-        -> Anyhow<(Rc<bundle::Image>, Rc<Atlas>)>
+        -> Anyhow<(Rc<crate::Image>, Rc<Atlas>)>
     {
         let cmp = self.load(cmp_path)?;
         let hash = util::fnv1a_64(&cmp);
-        let id = bundle::Id(hash);
-        if let Some((image, atlas)) = self.images.get(id) {
+        if let Some((image, atlas)) = self.images.get(&hash) {
             return Ok((image.clone(), atlas.clone()));
         }
 
@@ -143,23 +159,24 @@ impl Bundler {
         let image = Rc::new(image);
         let atlas = Rc::new(atlas);
 
-        self.images.add(id, (image.clone(), atlas.clone()));
+        self.images.insert(hash, (image.clone(), atlas.clone()));
         Ok((image, atlas))
     }
 
-    fn scene(&mut self, prm_path: &Path, atlas: &Atlas) -> Anyhow<Rc<bundle::Scene>> {
+    fn scene(&mut self, prm_path: &Path, atlas: &Atlas) -> Anyhow<Rc<crate::Scene>> {
         let prm = self.load(prm_path)?;
         let hash = util::fnv1a_64(&prm);
-        let id = bundle::Id(hash);
-        if let Some(scene) = self.scenes.get(id) {
+        if let Some(scene) = self.scenes.get(&hash) {
             return Ok(scene.clone());
         }
 
-        let prm = Prm::load(&prm, atlas).context(prm_path.to_owned())?;
-        let mesh = Rc::new(prm.mesh);
-        self.meshes.add(id, mesh.clone());
-        let scene = Rc::new(bundle::Scene{mesh, objects: prm.objects});
-        self.scenes.add(id, scene.clone());
+        let debug_name = prm_path.as_str();
+        let Prm{objects, sprites, mesh} = Prm::load(&prm, debug_name, atlas)
+            .with_context(|| prm_path.to_owned())?;
+        let mesh = Rc::new(mesh);
+        self.meshes.insert(hash, mesh.clone());
+        let scene = Rc::new(crate::Scene{mesh, objects, sprites});
+        self.scenes.insert(hash, scene.clone());
         Ok(scene)
     }
 }
@@ -175,6 +192,12 @@ impl RawRgbx {
 impl From<RawRgbx> for [f32; 3] {
     fn from(RawRgbx([r,g,b,_]): RawRgbx) -> Self {
         [r,g,b].map(|x| (x as f32 / 128.))
+    }
+}
+
+impl From<RawRgbx> for [crate::UNorm8; 4] {
+    fn from(RawRgbx([r,g,b,_]): RawRgbx) -> Self {
+        [r,g,b,128].map(|x| crate::UNorm8(x.clamp(0, 127) << 1))
     }
 }
 

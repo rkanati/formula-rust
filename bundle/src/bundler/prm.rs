@@ -1,60 +1,71 @@
 use {
-    crate::{bundle, bundler::atlas::Atlas},
+    crate::{
+        bundler::atlas::Atlas,
+        be::Be,
+        un16,
+    },
     anyhow::{Result as Anyhow, Context as _, anyhow},
     bytemuck::{self as bm, Pod, Zeroable, AnyBitPattern},
     ultraviolet as uv,
 };
 
 pub struct Prm {
-    pub objects: Vec<bundle::SceneObject>,
-    pub mesh: bundle::Mesh,
+    pub objects: Vec<crate::SceneObject>,
+    pub sprites: Vec<crate::Sprite>,
+    pub mesh: crate::Mesh,
 }
 
 impl Prm {
-    pub fn load(bytes: &[u8], atlas: &Atlas) -> Anyhow<Prm> {
-        log::debug!(target: "prm", "loading prm");
+    pub fn load(bytes: &[u8], debug_name: &str, atlas: &Atlas) -> Anyhow<Prm> {
+        log::debug!(target: "prm", "loading prm '{debug_name}'");
 
         let cursor = &mut &bytes[..];
         let mut objects = Vec::new();
-        let mut mesh = bundle::Mesh::default();
+        let mut sprites = Vec::new();
+        let mut mesh = crate::Mesh::default();
         while !cursor.is_empty() {
             let offset = bytes.len() - cursor.len();
-            let object = load_object(bytes.len(), cursor, &mut mesh, atlas)
+            let object = load_object(bytes.len(), cursor, &mut mesh, &mut sprites, atlas)
                 .map_err(|e| anyhow!(e))
                 .with_context(|| format!("prm offset: {offset:#0x}"))?;
             objects.push(object);
         }
 
-        Ok(Prm{objects, mesh})
+        Ok(Prm{objects, sprites, mesh})
     }
 }
 
-fn load_object(prm_len: usize, bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas: &Atlas)
-    -> Anyhow<bundle::SceneObject>
+fn load_object(
+    prm_len: usize, bytes: &mut &[u8],
+    mesh: &mut crate::Mesh,
+    sprites: &mut Vec<crate::Sprite>,
+    atlas: &Atlas,
+) -> Anyhow<crate::SceneObject>
 {
     let cursor = &mut *bytes;
 
-    log::debug!(target: "prm", "grabbing object at +{off:x}", off = prm_len - cursor.len());
+    log::trace!(target: "prm", "grabbing object at +{off:x}", off = prm_len - cursor.len());
     let raw_object: RawObject = grab(cursor)?;
-    let obj_name = raw_object.name();
-    log::debug!(target: "prm", "object name '{obj_name}'");
+    log::trace!(target: "prm", "object name '{obj_name}'", obj_name = raw_object.name());
 
     let n_verts = raw_object.n_verts.get() as usize;
-    log::debug!(target: "prm", "{n_verts} vertices at +{off:x}", off = prm_len - cursor.len());
+    log::trace!(target: "prm", "{n_verts} vertices at +{off:x}", off = prm_len - cursor.len());
     let verts: &[RawSVector] = grab_n(n_verts, cursor)?;
+
+    let obj_xyz = raw_object.pos.map(Be::get);
 
     let start = mesh.idxs.len() as u32;
 
-    for prim_i in 0..raw_object.n_prims.get() {
-        log::debug!(target: "prm", "grabbing primitive at +{off:x}", off = prm_len - cursor.len());
+    for _ in 0..raw_object.n_prims.get() {
+        log::trace!(target: "prm", "grabbing primitive at +{off:x}", off = prm_len - cursor.len());
         let raw_ty: Be<u16> = grab(cursor)?;
         let ty = RawPrimType::parse(raw_ty.get())?;
         let flags: Be<u16> = grab(cursor)?;
         let flags = flags.get();
-        let one_sided   = flags & 1 != 0;
+        let _one_sided   = flags & 1 != 0;
         let ship_engine = flags & 2 != 0;
-        let translucent = flags & 4 != 0;
-        log::debug!(target: "prm", "primitive type {raw_ty}: {ty:?}, flags {flags:03b}",
+        let _translucent = flags & 4 != 0;
+        log::trace!(target: "prm", "primitive type {raw_ty}: {ty:?}, flags {flags:03b}",
             raw_ty = raw_ty.get());
 
         //eprintln!("+{off:#x}: {ty:?}");
@@ -84,29 +95,9 @@ fn load_object(prm_len: usize, bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas
                     else { let _ = cursor.take(..2); grab_n(n_smooth, cursor)? }
                 );
 
-
-                // XXX debug coloring
-                /*for color in &mut colors {
-                    *color = super::RawRgbx([
-                        if one_sided   {128} else {0},
-                        if ship_engine {128} else {0},
-                        if translucent {128} else {0},
-                        255
-                    ]);
-                }*/
                 for color in &mut colors {
                     if ship_engine {*color = super::RawRgbx([128, 64, 0, 255]);}
                 }
-
-                /*for color in &mut colors {
-                    let bits = prim_i & 7;
-                    *color = super::RawRgbx([
-                        if bits & 1 != 0 {128} else {0},
-                        if bits & 2 != 0 {128} else {0},
-                        if bits & 4 != 0 {128} else {0},
-                        255
-                    ]);
-                }*/
 
                 let elems = (0..n_verts)
                     .map(|i_vert| {
@@ -115,12 +106,13 @@ fn load_object(prm_len: usize, bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas
                                 .copied()
                                 .unwrap_or(verts[0]);
                             let RawSVector([x,y,z,_]) = vert;
-                            [x,y,z].map(|x| x.get() as i32)
+                            [x,y,z].map(|x| x.get() as f32)
                         };
 
-                        let uv = uvs[i_vert].into();
+                        let uv: [f32; 2] = uvs[i_vert].into();
+                        let uv = uv.map(un16::new);
                         let rgb = colors[i_vert as usize % n_smooth].into();
-                        bundle::MeshVert{xyz, uv, rgb}
+                        crate::MeshVert{xyz, uv, rgb}
                     });
 
                 let idx_base = mesh.verts.len() as u32;
@@ -135,7 +127,20 @@ fn load_object(prm_len: usize, bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas
             }
 
             RawPrimType::Tspr | RawPrimType::Bspr => {
-                let _sprite: RawSprite = grab(cursor)?;
+                let sprite: RawSprite = grab(cursor)?;
+                let wh = [sprite.width, sprite.height].map(|x| x.get() as f32);
+                let RawSVector([x,y,z,_]) = verts.get(sprite.vertex.get() as usize).copied()
+                    .unwrap_or(verts[0]);
+                let dy = wh[1] * if let RawPrimType::Tspr = ty {0.5} else {-0.5};
+                let xyz = [
+                    x.get() as f32 + obj_xyz[0] as f32,
+                    y.get() as f32 + obj_xyz[1] as f32 + dy,
+                    z.get() as f32 + obj_xyz[2] as f32,
+                ];
+                let rgb = sprite.color.into();
+                let uvs: [f32; 4] = atlas.lookup_rect(sprite.texture.get() as usize).into();
+                let uvs = uvs.map(un16::new);
+                sprites.push(crate::Sprite{xyz, wh, rgb, uvs});
             }
 
             RawPrimType::Pad => {
@@ -156,8 +161,8 @@ fn load_object(prm_len: usize, bytes: &mut &[u8], mesh: &mut bundle::Mesh, atlas
 
 
     *bytes = *cursor;
-    Ok(bundle::SceneObject {
-        xyz: raw_object.pos.map(Be::get),
+    Ok(crate::SceneObject {
+        xyz: obj_xyz,
         start,
         count,
     })
@@ -201,31 +206,6 @@ fn grab_n<'a, T: AnyBitPattern> (n: usize, bytes: &mut &'a [u8])
     Ok(value)
 }
 
-#[repr(transparent)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Be<T>(T) where T: Pod;
-
-impl<T> std::fmt::Debug for Be<T> where T: Pod + std::fmt::Debug {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?} (be)", self.get())
-    }
-}
-
-impl<T> Be<T> where T: Pod {
-    fn get(mut self) -> T {
-        bm::bytes_of_mut(&mut self.0).reverse();
-        self.0
-    }
-}
-
-impl<T> From<T> for Be<T> where T: Pod {
-    fn from(mut x: T) -> Self {
-        bm::bytes_of_mut(&mut x).reverse();
-        Be(x)
-    }
-}
-
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy, AnyBitPattern)]
 struct RawTransform {
@@ -255,14 +235,12 @@ struct RawSVector([Be<i16>; 4]);
 #[repr(C)]
 #[derive(Clone, Copy, AnyBitPattern)]
 struct RawObject {
-    name: [u8; 16],     //  16
+    name: [u8; 15],     //  16
+    _pad_name: u8,
     n_verts: Be<u16>,   //  18
     _pad0: [u8; 14],    //  32
     n_prims: Be<u16>,   //  34
-    _pad1: [u8; 25],
-    _pad2: [u8; 25],    //  84
-    _rel: [i32; 3],     //  96
-    _pad3: [u8; 20],    // 116
+    _pad1: [u8; 82],
     pos: [Be<i32>; 3],  // 128
     _pad4: [u8; 16],    // 144
 }
@@ -290,9 +268,9 @@ impl std::fmt::Debug for RawObject {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, AnyBitPattern)]
 struct RawSprite {
-    coord: Be<i16>,
-    width: Be<i16>,
-    height: Be<i16>,
+    vertex: Be<u16>,
+    width: Be<u16>,
+    height: Be<u16>,
     texture: Be<u16>,
     color: super::RawRgbx,
 }

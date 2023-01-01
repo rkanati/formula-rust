@@ -1,8 +1,8 @@
 use {
-    crate::bundle,
     anyhow::Result as Anyhow,
     image::{GenericImage, RgbaImage, Rgba},
     pack_rects::prelude::*,
+    rapid_qoi::Qoi,
     ultraviolet as uv,
     util::row_major,
 };
@@ -32,68 +32,62 @@ impl Atlas {
         self.uivis[index] * self.scales
     }
 
-    pub fn make(label: &str, images: &[RgbaImage]) -> Anyhow<(bundle::Image, Atlas)> {
+    pub fn make(label: &str, images: &[RgbaImage]) -> Anyhow<(crate::Image, Atlas)> {
         const ALIGN: i32 = 1 << N_REDUCTIONS;
 
-        // allocate atlas regions for textures
-        let mut packer = RectPacker::new([1024; 2]);
-
-        let rects = images.iter()
-            .map(|image| {
+        let mut rects = images.iter().enumerate()
+            .map(|(i, image)| {
                 let w = ALIGN * 2 + image.width() as i32;
                 let h = ALIGN * 2 + image.height() as i32;
-                packer.pack_now([w, h]).unwrap()
+                ([w, h], i, image)
             })
             .collect::<Vec<_>>();
 
         // reserve a white area for non-texturing
-        let white_area = packer.pack_now([ALIGN*2; 2]).unwrap();
+        let white_image = RgbaImage::from_pixel(1, 1, Rgba([0xff; 4]));
+        let white_i = images.len();
+        rects.push(([ALIGN * 2; 2], white_i, &white_image));
+
+        rects.sort_unstable_by_key(|&([w, h], _, _)| std::cmp::Reverse(h.max(w)));
+
+        // allocate atlas regions for textures
+        let mut packer = RectPacker::new([1024; 2]);
+        let allocs = rects.into_iter()
+            .map(|([w, h], i, img)| {
+                let rect = packer.pack_now([w, h])?;
+                Some((rect, i, img))
+            })
+            .collect::<Option<Vec<_>>>().ok_or(anyhow::anyhow!("ran out of atlas space"))?;
 
         // make atlas no larger than necessary
-        let [wide, high] = rects.iter()
-            .map(|rect| rect.maxs())
+        let [wide, high] = allocs.iter()
+            .map(|(rect, _, _)| rect.maxs())
             .reduce(|a, b| a.zip(b).map(|(a, b)| a.max(b)))
             .unwrap()
             .map(|x| x.next_multiple_of(ALIGN) as u32);
-        let wide = wide.max(white_area.max_x() as u32);
-        let high = high.max(white_area.max_y() as u32);
 
         let mut atlas = checkerboard(
             wide, high, N_REDUCTIONS as u32, Rgba([255,0,255,255]), Rgba([0,255,255,255])
         );
 
-        // fill white area
-        row_major(
-                white_area.min_x() .. white_area.max_x(),
-                white_area.min_y() .. white_area.max_y()
-            )
-            .for_each(|(x, y)| {
-                atlas.put_pixel(x as u32, y as u32, [255;4].into());
-            });
-
         // blit texture images into atlas
-        let mut uivis = rects.iter().enumerate()
-            .map(|(image_i, &dst_rect)| {
-                let src = &images[image_i as usize];
-                let src_rect = blit_with_apron(&mut atlas, dst_rect, &src);
+        let mut uivis = allocs.into_iter()
+            .map(|(dst_rect, i, image)| {
+                let src_rect = blit_with_apron(&mut atlas, dst_rect, image);
                 let rect = uv::IVec4::from(src_rect.corners());
-                rect.into()
+                (i, rect.into())
             })
             .collect::<Vec<_>>();
+        uivis.sort_unstable_by_key(|&(i, _)| i);
+        let uivis = uivis.into_iter().map(|(_, uivi)| uivi).collect();
 
-        uivis.push({
-            let uv::IVec2{x, y}
-                = uv::IVec2::from(white_area.mins())
-                + uv::IVec2::from(white_area.dims()) / 2;
-            uv::IVec4::from([x-1, y-1, x, y]).into()
-        });
+        let data = generate(label, atlas);
 
-        let levels = generate_levels(label, atlas);
-
-        let image = bundle::Image {
+        let image = crate::Image {
             wide: wide as u16,
             high: high as u16,
-            levels,
+            coding: crate::ImageCoding::Qoi,
+            data,
         };
 
         let scales = {
@@ -106,7 +100,7 @@ impl Atlas {
     }
 
     pub fn make_for_road(label: &str, fragments: &[RgbaImage], mip_mappings: &[MipMapping])
-        -> Anyhow<(bundle::Image, Atlas)>
+        -> Anyhow<(crate::Image, Atlas)>
     {
         let frag_dims = {
             let (frag_w, frag_h) = fragments[0].dimensions();
@@ -175,47 +169,27 @@ fn blit_with_apron(dst: &mut RgbaImage, dst_rect: Rect, src: &RgbaImage) -> Rect
     Rect::with_dims(src_mins.into(), src_dims.into())
 }
 
-fn reduce(image: &RgbaImage) -> RgbaImage {
-    assert!(image.width()  & 1 == 0, "image dims: {:?}", image.dimensions());
-    assert!(image.height() & 1 == 0, "image dims: {:?}", image.dimensions());
+fn generate(label: &str, image: RgbaImage) -> Vec<u8> {
+    let base_width = image.width();
+    let base_height = image.height();
 
-    let rw = image.width()  / 2;
-    let rh = image.height() / 2;
+    let _ = image.save(&format!("debug-out/atlas-{label}.tga"));//-{level_i:02}.tga"));
 
-    let pixels: &[[[u8; 4]; 2]] = bytemuck::cast_slice(image.as_ref());
-    let pixels = pixels.chunks(rw as usize)
-        .array_chunks()
-        .flat_map(|[even_row, odd_row]| {
-            even_row.into_iter().zip(odd_row.into_iter())
-                .map(|([a, b], [c, d])| {
-                    [a, b, c, d].into_iter()
-                        .fold(
-                            [0u32; 4],
-                            |a, &p| a.zip(p).map(|(a, p)| a + p as u32)
-                        )
-                        .map(|x| (x / 4) as u8)
-                })
-        })
-        .flatten()
-        .collect::<Vec<_>>();
+    let mut qoi_buffer = {
+        let qoi = Qoi {
+            width: base_width,
+            height: base_height,
+            colors: rapid_qoi::Colors::Rgba
+        };
+        let mut buf = Vec::new();
+        buf.resize(qoi.encoded_size_limit(), 0u8);
+        buf
+    };
 
-    RgbaImage::from_vec(rw, rh, pixels).unwrap()
-}
-
-fn generate_levels(label: &str, image: RgbaImage) -> Vec<Vec<u8>> {
-    let mut levels = vec![image];
-    while levels.len() <= N_REDUCTIONS {
-        let image = reduce(levels.last().unwrap());
-        levels.push(image);
-    }
-
-    for (level_i, level) in levels.iter().enumerate() {
-        let _ = level.save(&format!("debug-out/atlas-{label}-{level_i:02}.tga"));
-    }
-
-    levels.into_iter()
-        .map(|lv| lv.into_vec())
-        .collect()
+    let (s0, s1, s2) = &mut ([[0u8; 4]; 64], [0u8, 0u8, 0u8, 0xff_u8], 0_usize);
+    let len = Qoi::encode_range(s0, s1, s2, &image, &mut qoi_buffer[..]).unwrap();
+    qoi_buffer[len..][..8].copy_from_slice(&[0,0,0,0,0,0,0,1]);
+    qoi_buffer[..len+8].into()
 }
 
 fn checkerboard(w: u32, h: u32, log2_pitch: u32, a: Rgba<u8>, b: Rgba<u8>) -> RgbaImage {
