@@ -1,5 +1,6 @@
 use {
-    crate::gl::{api as gl, Gl, Attrib, make_arrays, GLuint, BasicShader},
+    crate::gl::prelude::*,
+    crate::render::{Attrib, make_arrays, BasicShader},
     ultraviolet as uv,
 };
 

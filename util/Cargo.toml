@@ -6,4 +6,6 @@ authors.workspace = true
 name = "util"
 
 [dependencies]
+rkyv = "0.7"
+bytemuck = "1"
 

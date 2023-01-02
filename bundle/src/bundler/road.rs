@@ -1,19 +1,18 @@
 use {
-    crate::{bundler::atlas::Atlas, un16, be::Be},
-    std::rc::Rc,
+    crate::{bundler::atlas::Atlas, be::Be},
     anyhow::Result as Anyhow,
     bytemuck as bm,
     ultraviolet as uv,
 };
 
-pub fn make_road(trv: &[u8], trf: &[u8], trs: &[u8], atlas: &Atlas)
-    -> Anyhow<(Rc<crate::Mesh>, crate::TrackGraph)>
+pub fn make_road(trv: &[u8], trf: &[u8], trs: &[u8])
+    -> Anyhow<(crate::RoadModel, crate::TrackGraph)>
 {
     let vs = bm::try_cast_slice(trv)?;
     let fs = bm::try_cast_slice(trf)?;
-    let mesh = make_mesh(&vs, &fs, &atlas)?;
+    let model = make_model(&vs, &fs)?;
     let graph = make_graph(&trs, &vs, &fs);
-    Ok((mesh, graph))
+    Ok((model, graph))
 }
 
 #[repr(transparent)]
@@ -43,32 +42,22 @@ struct RawFace {
     colour: super::RawRgbx,
 }
 
-fn make_mesh(verts: &[RawVert], faces: &[RawFace], atlas: &Atlas) -> Anyhow<Rc<crate::Mesh>> {
-    let verts = faces.iter()
-        .flat_map(|face| {
-            let rgb = face.colour.into();
+fn make_model(verts: &[RawVert], faces: &[RawFace]) -> Anyhow<crate::RoadModel> {
+    let verts = verts.iter().copied().map(Into::into).collect();
 
-            let uvs: [f32; 4] = atlas.lookup_rect(face.tex as usize).into();
-            let [u0, v0, u1, v1]: [un16; 4] = uvs.map(un16::new);
-            let uvs = [[u1, v0], [u0, v0], [u0, v1], [u1, v1]];
-            let uvis =
-                if face.flags & 4 == 0 { [0, 1, 2, 3] }
-                else                   { [1, 0, 3, 2] };
-            let uvs = uvis.map(|i| uvs[i]);
+    let mut f_verts = Vec::with_capacity(faces.len());
+    let mut f_tex   = Vec::with_capacity(faces.len());
+    let mut f_flags = Vec::with_capacity(faces.len());
+    let mut f_rgb   = Vec::with_capacity(faces.len());
 
-            face.verts
-                .map(|vi| verts[vi.get() as usize])
-                .zip(uvs)
-                .map(|(xyz, uv)| crate::MeshVert{xyz: xyz.into(), rgb, uv})
-        })
-        .collect();
+    for face in faces {
+        f_verts.push(face.verts.map(Be::get));
+        f_tex.push(face.tex);
+        f_flags.push(face.flags);
+        f_rgb.push(face.colour.into());
+    }
 
-    let idxs = (0 .. faces.len() as u32)
-        .flat_map(|face_i| [0, 1, 2, 0, 2, 3].map(|i| i + face_i * 4))
-        .collect();
-
-    //let mesh = bundle_out.meshes.add(asset_path, crate::Mesh{verts, idxs});
-    Ok(Rc::new(crate::Mesh{verts, idxs}))
+    Ok(crate::RoadModel{verts, f_verts, f_tex, f_flags, f_rgb})
 }
 
 #[repr(C)]
@@ -92,19 +81,6 @@ fn make_graph(trs: &[u8], verts: &[RawVert], faces: &[RawFace]) -> crate::TrackG
         .map(|rs| {
             let i0 = rs.face_i0.get() as usize;
             let nf = rs.n_faces.get() as usize;
-
-            /*let mut n = 0;
-            let mut p = uv::Vec3::zero();
-            for i in i0 .. i0+nf {
-                let face = &faces[i as usize];
-                if face.flags & 1 == 0 {continue;}
-                let q = face.verts.into_iter()
-                    .map(|vi| verts[vi.get() as usize].into())
-                    .sum::<uv::Vec3>();
-                p += q;
-                n += 4;
-            }
-            let center = p / n as f32;*/
 
             let center = (i0 .. i0+nf)
                 .filter_map(|i| {

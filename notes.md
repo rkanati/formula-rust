@@ -1,8 +1,5 @@
 # todo
 
-## bugs
-    - track17 panic during spline construction
-
 - 🟠 graphics
     - 🟠 basic shader
         - 🔘 essential transforms, colours, textures
@@ -32,6 +29,7 @@
     - 🟠 textures
         - 🔘 basic conversion
         - 🔘 qoi encoding
+        - 🔴 correct alpha extraction
         - 🟠 atlases
             - 🔴 pack individual + build atlases at load
                 - better compression

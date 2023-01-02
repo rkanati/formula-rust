@@ -2,6 +2,7 @@ mod atlas;
 mod font;
 mod prm;
 mod road;
+mod image_set;
 
 use {
     atlas::Atlas,
@@ -56,18 +57,18 @@ fn make_fonts(bundler: &mut Bundler, fonts_dir: &Path) -> Anyhow<()> {
 fn make_sky(bundler: &mut Bundler, track_name: &Path)
     -> Anyhow<(Rc<crate::Scene>, Rc<crate::Image>)>
 {
-    let (image, atlas) = bundler.atlas(&track_name.join("sky.cmp"), None)?;
+    let (image, atlas) = bundler.atlas(&track_name.join("sky.cmp"))?;
     let scene = bundler.scene(&track_name.join("sky.prm"), &atlas)?;
     Ok((scene, image))
 }
 
 fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<()> {
     let (sky_scene, sky_image) = make_sky(bundler, track_name)?;
-    let (scenery_image, scenery_atlas) = bundler.atlas(&track_name.join("scene.cmp"), None)?;
+    let (scenery_image, scenery_atlas) = bundler.atlas(&track_name.join("scene.cmp"))?;
     let scenery_scene = bundler.scene(&track_name.join("scene.prm"), &scenery_atlas)?;
 
-    let (road_mesh, graph, road_image) = {
-        let (image, atlas) = bundler.atlas(
+    let (road_model, graph, road_iset) = {
+        let iset = bundler.image_set(
             &track_name.join("library.cmp"),
             Some(&track_name.join("library.ttf"))
         )?;
@@ -75,12 +76,12 @@ fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<()> {
         let trv = bundler.load(track_name.join("track.trv"))?;
         let trf = bundler.load(track_name.join("track.trf"))?;
         let trs = bundler.load(track_name.join("track.trs"))?;
-        let (mesh, graph) = road::make_road(&trv, &trf, &trs, &atlas)?;
-        (mesh, graph, image)
+        let (model, graph) = road::make_road(&trv, &trf, &trs)?;
+        (model, graph, iset)
     };
 
     let track = crate::Track {
-        road_mesh, road_image,
+        road_model, road_iset,
         scenery_scene, scenery_image,
         sky_scene, sky_image,
         graph,
@@ -92,7 +93,7 @@ fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<()> {
 
 fn make_ships(bundler: &mut Bundler) -> Anyhow<()> {
     log::info!("making ships");
-    let (image, atlas) = bundler.atlas("common/allsh.cmp".into(), None)?;
+    let (image, atlas) = bundler.atlas("common/allsh.cmp".into())?;
     let scene = bundler.scene("common/allsh.prm".into(), atlas.as_ref())?;
     bundler.ship_image = Some(image);
     bundler.ship_scene = Some(scene);
@@ -137,7 +138,15 @@ impl Bundler {
         Ok(compressed)
     }
 
-    fn atlas(&mut self, cmp_path: &Path, ttf_path: Option<&Path>)
+    // TODO dedup
+    fn image_set(&mut self, cmp_path: &Path, ttf_path: Option<&Path>) -> Anyhow<crate::ImageSet> {
+        let cmp = self.load(cmp_path)?;
+        let ttf = ttf_path.map(|p| self.load(p)).transpose()?;
+        let label = cmp_path.components().nth(0).unwrap().as_str();
+        image_set::build(label, &cmp, ttf.as_deref())
+    }
+
+    fn atlas(&mut self, cmp_path: &Path)
         -> Anyhow<(Rc<crate::Image>, Rc<Atlas>)>
     {
         let cmp = self.load(cmp_path)?;
@@ -148,14 +157,7 @@ impl Bundler {
 
         let images = formats::load_cmp(&cmp)?;
         let label = format!("{hash:016x}");
-        let (image, atlas) = if let Some(ttf_path) = ttf_path {
-            let ttf = self.load(ttf_path)?;
-            let mip_mappings = atlas::parse_ttf(&ttf);
-            Atlas::make_for_road(&label, &images, &mip_mappings)?
-        }
-        else {
-            Atlas::make(&label, &images)?
-        };
+        let (image, atlas) = Atlas::build(&label, &images)?;
         let image = Rc::new(image);
         let atlas = Rc::new(atlas);
 
@@ -198,6 +200,12 @@ impl From<RawRgbx> for [f32; 3] {
 impl From<RawRgbx> for [crate::UNorm8; 4] {
     fn from(RawRgbx([r,g,b,_]): RawRgbx) -> Self {
         [r,g,b,128].map(|x| crate::UNorm8(x.clamp(0, 127) << 1))
+    }
+}
+
+impl From<RawRgbx> for [crate::UNorm8; 3] {
+    fn from(RawRgbx([r,g,b,_]): RawRgbx) -> Self {
+        [r,g,b].map(|x| crate::UNorm8(x.clamp(0, 127) << 1))
     }
 }
 

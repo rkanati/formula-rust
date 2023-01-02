@@ -1,3 +1,4 @@
+#![feature(int_roundings)]
 
 pub fn row_major<Xs, Ys> (xs: Xs, ys: Ys)
     -> impl Iterator<Item = (Xs::Item, Ys::Item)>
@@ -23,4 +24,7 @@ pub const fn fnv1a_64(bs: &[u8]) -> u64 {
     }
     h
 }
+
+pub mod unorm;
+pub use unorm::{UNorm8, UNorm16, un8, un16};
 

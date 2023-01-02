@@ -1,13 +1,19 @@
 #![feature(array_zip)]
 #![feature(iter_array_chunks)]
+#![feature(int_roundings)]
 
-mod gl;
+mod atlas;
 mod camera;
-mod input;
+mod display;
 mod font;
+mod gl;
+mod input;
+mod render;
+mod road;
 
 use {
     input::Button,
+    display::Display,
     font::Font,
     camera::*,
     winit::event_loop::EventLoop,
@@ -26,8 +32,8 @@ fn main() {
 
     // bring up graphics
     let eloop = EventLoop::new();
-    let display = gl::Display::init(&eloop);
-    let shader = gl::BasicShader::create(&display);
+    let display = Display::init(&eloop);
+    let shader = render::BasicShader::create(&display);
 
     // start loading assets
     let bundle = {
@@ -46,7 +52,7 @@ fn main() {
         bundle
     };
 
-    let blank_tex = gl::make_blank_texture(&display);
+    let blank_tex = render::make_blank_texture(&display);
 
     let (track_name, track) = if let Some(track_name) = &track_name {
         (&track_name[..], &bundle.tracks[track_name.as_str()])
@@ -60,18 +66,23 @@ fn main() {
     };
     log::info!("loading {track_name}");
 
-    let (road_mesh_len, road_vao, road_tex) = {
-        let len = track.road_mesh.idxs.len();
-        log::info!("road mesh has {len} indices");
-        let vao = gl::make_mesh(&display, &track.road_mesh);
-        let tex = gl::make_texture(&display, &track.road_image);
-        (len, vao, tex)
+    let (road_mesh, road_tex) = {
+        let atlas = atlas::Atlas::build(&track.road_iset).unwrap();
+        let mesh = road::RoadMesh::build(&display, &track.road_model, &atlas);
+        let image = atlas.into_image();
+        let tex = render::make_texture_raw(
+            &display,
+            image.wide() as u16,
+            image.high() as u16,
+            bytemuck::cast_slice(image.try_as_slice().unwrap())
+        );
+        (mesh, tex)
     };
 
-    let scenery = gl::Scene::load(&display, &track.scenery_scene, &track.scenery_image);
-    let sky = gl::Scene::load(&display, &track.sky_scene, &track.sky_image);
+    let scenery = render::Scene::load(&display, &track.scenery_scene, &track.scenery_image);
+    let sky = render::Scene::load(&display, &track.sky_scene, &track.sky_image);
 
-    let ships = gl::Scene::load(&display, &bundle.ship_scene, &bundle.ship_image);
+    let ships = render::Scene::load(&display, &bundle.ship_scene, &bundle.ship_image);
 
     let fonts = ["Amalgama", "2097", "Fusion", "supErphoniX2", "WO3", "X2"]
         .into_iter()
@@ -82,7 +93,8 @@ fn main() {
     let silly = fonts[0].bake_run(font::Anchor::Center, "Hold © tight!");
     let man = fonts[0].bake_run(font::Anchor::Center, "©");
 
-    let mut cam = Camera::from(FlythruCam::new(&track.graph[..]));
+    //let mut cam = Camera::from(FlythruCam::new(&track.graph[..]));
+    let mut cam = Camera::from(DebugCam::new());
     let mut ctrl_turning = false;
 
     eloop.run(move |ev, _, flow| {
@@ -222,7 +234,9 @@ fn main() {
                         man.draw(gl, &shader, -300., 0.5, p+uv::Vec3::new(0., -500., 0.));
                     }*/
 
-                    gl.BindVertexArray(road_vao);
+                    gl.BindTexture(gl::TEXTURE_2D, road_tex);
+                    road_mesh.draw(gl, &shader);
+                    /*gl.BindVertexArray(road_vao);
                     gl.BindTexture(gl::TEXTURE_2D, road_tex);
                     gl.Disable(gl::CULL_FACE);
                     shader.setup(gl, |params| params.3 = false);
@@ -231,7 +245,7 @@ fn main() {
                         road_mesh_len as _,
                         gl::UNSIGNED_INT,
                         std::ptr::null(),
-                    );
+                    );*/
 
                     gl.Disable(gl::DEPTH_TEST);
                     shader.select(gl, ui_to_clip);
@@ -252,7 +266,7 @@ fn log_init(filter: log::LevelFilter) {
     use simplelog::*;
     let simple = TermLogger::new(
         filter,
-        Config::
+        Config::default(),
         TerminalMode::Stderr,
         ColorChoice::Auto,
     );

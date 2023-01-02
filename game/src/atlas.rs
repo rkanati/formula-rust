@@ -1,45 +1,63 @@
 use {
-    anyhow::Result as Anyhow,
+    bundle::rapid_qoi,
     pack_rects::prelude::*,
-    rapid_qoi::Qoi,
     ultraviolet as uv,
-    util::row_major,
+    anyhow::Result as Anyhow,
     pixmap::{Pixmap, Rgba},
-    bytemuck as bm,
+    rapid_qoi::Qoi
 };
 
-const N_REDUCTIONS: usize = 4;
-const ALIGN: i32 = 1 << N_REDUCTIONS;
-
 pub struct Atlas {
+    image: Pixmap<Vec<Rgba>>,
     scales: uv::Vec4,
     uivis: Vec<uv::IVec4>,
 }
 
+const N_REDUCTIONS: usize = 4;
+const ALIGN: i32 = 1 << N_REDUCTIONS;
+
 impl Atlas {
-    pub fn no_texture(&self) -> uv::Vec4 {
-        uv::Vec4::from(*self.uivis.last().unwrap()) * self.scales
-    }
+    pub fn build(iset: &bundle::ArchivedImageSet) -> Anyhow<Atlas> {
+        let mut pixmaps = {
+            let (s0, s1, s2) = &mut ([[0; 4]; 64], [0, 0, 0, 255], 0);
+            let mut input = &iset.qoi_stream[..];
+            iset.sizes.iter().copied()
+                .map(|(w, h)| {
+                    let mut pixels = Vec::new();
+                    pixels.resize(w as usize * h as usize, Rgba::TRANSPARENT);
+                    let consumed = Qoi::decode_range(
+                        s0, s1, s2,
+                        input,
+                        bytemuck::cast_slice_mut(&mut pixels),
+                    )?;
+                    input = &input[consumed..].strip_prefix(&[0,0,0,0,0,0,0,1]).unwrap();
+                    let pm = Pixmap::new_from_pixels(pixels, 0, 1, w as i32, h as i32).unwrap();
+                    Ok(pm)
+                })
+                .collect::<Anyhow<Vec<_>>>()?
+        };
 
-    pub fn lookup(&self, index: usize, offset: uv::Vec2) -> uv::Vec2 {
-        (uv::Vec2::from(self.uivis[index].xy()) + offset) * self.scales.xy()
-    }
+        for (i, pm) in pixmaps.iter().enumerate() {
+            image::save_buffer(
+                format!("debug-out/iset-{i}.tga"),
+                bytemuck::cast_slice(pm.try_as_slice().unwrap()),
+                pm.wide() as u32,
+                pm.high() as u32,
+                image::ColorType::Rgba8,
+            ).unwrap();
+        }
 
-    pub fn lookup_rect(&self, index: usize) -> uv::Vec4 {
-        uv::Vec4::from(self.uivis[index]) * self.scales
-    }
-
-    pub fn build(label: &str, pixmaps: &[Pixmap<Vec<Rgba>>]) -> Anyhow<(crate::Image, Atlas)> {
-        let mut rects = pixmaps.iter()
-            .map(|pm| {
-                let w = pm.wide() + ALIGN * 2;
-                let h = pm.high() + ALIGN * 2;
+        let mut rects = iset.sizes.iter().copied()
+            .map(|(w, h)| {
+                let w = w as i32 + ALIGN * 2;
+                let h = h as i32 + ALIGN * 2;
                 [w, h]
             })
             .enumerate()
             .collect::<Vec<_>>();
 
         let white_image = Pixmap::new(1, 1, Rgba::WHITE);
+        pixmaps.push(white_image);
         let white_i = rects.len();
         rects.push((white_i, [ALIGN * 2; 2]));
 
@@ -79,52 +97,34 @@ impl Atlas {
 
         let uivis = allocs.into_iter()
             .map(|(i, alloc)| {
-                let src = if i == white_i {&white_image} else {&pixmaps[i]};
-                let [rx, ry] = blit_with_apron(
+                let src = &pixmaps[i];
+                let [xr, yr] = blit_with_apron(
                     &mut image.slice_mut(alloc).expect("bad slice"),
                     &src.borrow(),
                 );
-                let [x0, y0] = [rx + alloc.x, ry + alloc.y];
+                let [x0, y0] = [alloc.x + xr, alloc.y + yr];
                 let [x1, y1] = [x0 + src.wide(), y0 + src.high()];
                 [x0, y0, x1, y1].into()
             })
             .collect::<Vec<_>>();
 
-        let image = generate(label, image);
+        image::save_buffer(
+            "debug-out/road-atlas.tga",
+            bytemuck::cast_slice(image.try_as_slice().unwrap()),
+            image.wide() as u32,
+            image.high() as u32,
+            image::ColorType::Rgba8,
+        ).unwrap();
 
-        Ok((image, Atlas{scales, uivis}))
+        Ok(Atlas{image, scales, uivis})
     }
-}
 
-fn generate(label: &str, image: Pixmap<Vec<Rgba>>) -> crate::Image {
-    //let base_width  = image.wide();
-    //let base_height = image.high();
+    pub fn into_image(self) -> Pixmap<Vec<Rgba>> {
+        self.image
+    }
 
-    //let _ = image.save(&format!("debug-out/atlas-{label}.tga"));//-{level_i:02}.tga"));
-
-    let mut qoi_buffer = {
-        let qoi = Qoi {
-            width:  image.wide() as u32,
-            height: image.high() as u32,
-            colors: rapid_qoi::Colors::Rgba
-        };
-        let mut buf = Vec::new();
-        buf.resize(qoi.encoded_size_limit(), 0u8);
-        buf
-    };
-
-    let len = Qoi::encode_range(
-        &mut [[0; 4]; 64], &mut [0, 0, 0, 255], &mut 0,
-        bm::cast_slice(&image.try_as_slice().unwrap()),
-        &mut qoi_buffer,
-    ).unwrap();
-    qoi_buffer.shrink_to(len);
-    qoi_buffer.extend_from_slice(&[0,0,0,0,0,0,0,1]);
-    crate::Image {
-        wide: image.wide() as u16,
-        high: image.high() as u16,
-        coding: crate::ImageCoding::Qoi,
-        data: qoi_buffer,
+    pub fn lookup_rect(&self, index: u8) -> uv::Vec4 {
+        uv::Vec4::from(self.uivis[index as usize]) * self.scales
     }
 }
 

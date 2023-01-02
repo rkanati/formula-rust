@@ -22,4 +22,5 @@ thiserror = "1"
 ttf-parser = "0.18"
 ultraviolet = { version = "0.9", features = ["int"] }
 util = { path = "../util" }
+pixmap = { path = "../pixmap" }
 

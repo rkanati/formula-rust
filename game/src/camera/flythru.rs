@@ -12,21 +12,21 @@ impl FlythruCam {
         let mut points = Vec::new();
         let mut node_i = 0;
 
-        loop {
+        let mut step = |node_i: u32| {
             let s = &graph[node_i as usize];
             points.push(s.center.into());
-            let next = Some(s.next[0]).filter(|&i| i != !0u32);
-            let junc = Some(s.next[1]).filter(|&i| i != !0u32);
-            node_i = next.or(junc).unwrap_or(0);
+            s.next.map(|i| Some(i).filter(|&i| i != !0u32))
+        };
+
+        loop {
+            let [n0, n1] = step(node_i);
+            node_i = n0.or(n1).unwrap_or(0);
             if node_i == 0 {break}
         }
 
         loop {
-            let s = &graph[node_i as usize];
-            points.push(s.center.into());
-            let next = Some(s.next[0]).filter(|&i| i != !0u32);
-            let junc = Some(s.next[1]).filter(|&i| i != !0u32);
-            node_i = junc.or(next).unwrap_or(0);
+            let [n0, n1] = step(node_i);
+            node_i = n1.or(n0).unwrap_or(0);
             if node_i == 0 {break}
         }
 
@@ -37,9 +37,28 @@ impl FlythruCam {
         let t = t.fract();
 
         let u = self.points.len() as f32 * t;
-        let v = u.floor();
         let i0 = u as i32;
-        let t = u - v;
+        let t = u - i0 as f32;
+
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let ts = uv::Vec4::new(t3, t2, t, 1.);
+
+        const BASIS: uv::Mat4 = uv::Mat4::new(
+            uv::Vec4::new( 2.,  1., 1.,-2.),
+            uv::Vec4::new(-3., -2.,-1., 3.),
+            uv::Vec4::new( 0.,  1., 0., 0.),
+            uv::Vec4::new( 1.,  0., 0., 0.),
+        );
+
+        let hs = BASIS * ts;
+        let [h0,h1,h2,h3]: [f32; 4] = hs.into();
+
+        /*
+        let h0 = ts.dot([ 2., -3., 0., 1.].into());
+        let h1 = ts.dot([ 1., -2., 1., 0.].into());
+        let h2 = ts.dot([ 1., -1., 0., 0.].into());
+        let h3 = ts.dot([-2.,  3., 0., 0.].into());*/
 
         let [p0, p1, p2, p3]: [uv::Vec3; 4] = [i0-1, i0, i0+1, i0+2]
             .map(|i| self.points[i.rem_euclid(self.points.len() as i32) as usize]);
@@ -47,20 +66,12 @@ impl FlythruCam {
         let m0 = 0.5 * (p2 - p0);
         let m1 = 0.5 * (p3 - p1);
 
-        let t2 = t * t;
-        let t3 = t2 * t;
-
-        let h0 =  2. * t3 - 3. * t2     + 1.;
-        let h1 =       t3 - 2. * t2 + t;
-        let h2 =       t3 -      t2;
-        let h3 = -2. * t3 + 3. * t2;
-
         h0*p1 + h1*m0 + h2*m1 + h3*p2
     }
 
     pub fn update(&mut self) -> uv::Isometry3 {
         let t_pos   = self.t;
-        let t_focus = t_pos + 0.002;
+        let t_focus = t_pos + 0.004;
         let offset = uv::Vec3::unit_y() * -400.;
 
         let pos   = self.eval(t_pos)   + offset;

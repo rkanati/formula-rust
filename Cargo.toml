@@ -1,5 +1,5 @@
 [workspace]
-members = ["game", "bundle", "util", "formats", "spu-adpcm"]
+members = ["game", "bundle", "util", "formats", "spu-adpcm", "pixmap"]
 
 [workspace.package]
 version = "0.1.0"

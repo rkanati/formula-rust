@@ -23,6 +23,7 @@ simplelog = "0.12"
 ultraviolet = { version = "0.9", features = ["int"] }
 winit = { version = "0.27", default-features = false, features = ["wayland"] }
 util = { path = "../util" }
+pixmap = { path = "../pixmap" }
 
 [build-dependencies]
 bundle = { path = "../bundle" }

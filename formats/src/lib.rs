@@ -8,12 +8,27 @@ pub mod lzss;
 use {
     anyhow::{Result as Anyhow, anyhow, bail},
     bytemuck::pod_read_unaligned as read,
-    image::RgbaImage,
+    pixmap::{Pixmap, Rgba},
 };
 
-// TODO positioning
+pub type Image = Pixmap<Vec<Rgba>>;
 
-pub fn load_tim(tim: &[u8]) -> Anyhow<RgbaImage> {
+pub fn load_cmp(cmp: &[u8]) -> Anyhow<Vec<Image>> {
+    let n_tims: u32 = read(&cmp[0..4]);
+    let (lens, data) = cmp[4..].split_at(n_tims as usize * 4);
+    let mut tims = lzss::expand(data);
+    lens.array_chunks()
+        .map(|&len| {
+            let len = u32::from_le_bytes(len) as usize;
+            if len == 0 {return Ok(Pixmap::new(1, 1, Rgba::TRANSPARENT))}
+            let rest = tims.split_off(len);
+            let tim = std::mem::replace(&mut tims, rest);
+            load_tim(&tim)
+        })
+        .collect()
+}
+
+pub fn load_tim(tim: &[u8]) -> Anyhow<Image> {
     if tim[0] != 0x10 || tim[1] != 0x00 {bail!("not a tim")}
     let pixel_type = tim[4] & 3;
     let got_clut = tim[4] & 8 != 0;
@@ -22,7 +37,7 @@ pub fn load_tim(tim: &[u8]) -> Anyhow<RgbaImage> {
     else        {from_direct(tim, pixel_type)}
 }
 
-fn from_indexed(tim: &[u8], pixel_type: u8) -> Anyhow<RgbaImage> {
+fn from_indexed(tim: &[u8], pixel_type: u8) -> Anyhow<Image> {
     let bs = &tim[8..];
 
     debug_assert!(pixel_type < 2);
@@ -48,37 +63,36 @@ fn from_indexed(tim: &[u8], pixel_type: u8) -> Anyhow<RgbaImage> {
     if bs.len() < 12 {bail!("truncated tim")}
     let (header, bs) = bs.split_at(12);
     let pixels_len = read::<u32>(&header[0..4]) as usize - 12;
-    let wide = read::<u16>(&header[ 8..10]) as u32;
-    if wide == 0 {std::fs::write("dump", tim);}
-    let high = read::<u16>(&header[10..12]) as u32;
+    let wide = read::<u16>(&header[ 8..10]);
+    let high = read::<u16>(&header[10..12]);
     let pixels = bs.get(..pixels_len).ok_or(anyhow!("truncated tim"))?;
 
     let (wide, pixels) = if four_bit {
         let pixels = pixels.iter().copied()
             .flat_map(|b| [(b & 0xf) as usize, (b >> 4) as usize])
-            .flat_map(|i| clut[i])
+            .map(|i| clut[i])
             .collect();
         (wide * 4, pixels)
     }
     else {
         let pixels = pixels.iter().copied()
-            .flat_map(|i| clut[i as usize])
+            .map(|i| clut[i as usize])
             .collect();
         (wide * 2, pixels)
     };
 
-    let image = RgbaImage::from_vec(wide, high, pixels).unwrap();
-    Ok(image)
+    let pm = Pixmap::new_from_pixels(pixels, 0, 1, wide.into(), high.into()).unwrap();
+    Ok(pm)
 }
 
-fn from_direct(_bs: &[u8], pixel_type: u8) -> Anyhow<RgbaImage> {
+fn from_direct(_bs: &[u8], pixel_type: u8) -> Anyhow<Image> {
     debug_assert!(pixel_type >= 2);
     todo!("direct-colour tims")
 }
 
-fn rgb15x1_to_rgba8(bits: u16) -> [u8; 4] {
+fn rgb15x1_to_rgba8(bits: u16) -> Rgba {
     if (bits >> 15) & 0x01 != 0 || (bits & 0x7fff) == 0 {
-        return [0; 4];
+        return Rgba::TRANSPARENT;
     }
 
     let ramp = |y: f32| y;
@@ -90,21 +104,6 @@ fn rgb15x1_to_rgba8(bits: u16) -> [u8; 4] {
     };
 
     let [r, g, b] = [0, 5, 10].map(chan);
-    [r, g, b, 255]
-}
-
-pub fn load_cmp(cmp: &[u8]) -> Anyhow<Vec<RgbaImage>> {
-    let n_tims: u32 = read(&cmp[0..4]);
-    let (lens, data) = cmp[4..].split_at(n_tims as usize * 4);
-    let mut tims = lzss::expand(data);
-    lens.array_chunks()
-        .map(|&len| {
-            let len = u32::from_le_bytes(len) as usize;
-            if len == 0 {return Ok(RgbaImage::from_pixel(1, 1, [0; 4].into()))}
-            let rest = tims.split_off(len);
-            let tim = std::mem::replace(&mut tims, rest);
-            load_tim(&tim)
-        })
-        .collect::<Result<Vec<_>, _>>()
+    [r, g, b, 255].into()
 }
 
