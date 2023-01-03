@@ -29,7 +29,7 @@ pub struct Path {
     pub points: Vec<[f32; 3]>,
 }
 
-#[derive(rkyv::Archive, rkyv::Serialize)]
+/*#[derive(rkyv::Archive, rkyv::Serialize)]
 pub enum ImageCoding {
     Flat,
     Qoi,
@@ -41,7 +41,7 @@ pub struct Image {
     pub high:   u16,
     pub coding: ImageCoding,
     pub data: Vec<u8>,
-}
+}*/
 
 #[derive(rkyv::Archive, rkyv::Serialize)]
 pub struct ImageSet {
@@ -49,40 +49,57 @@ pub struct ImageSet {
     pub qoi_stream: Vec<u8>,
 }
 
-#[derive(rkyv::Archive, rkyv::Serialize)]
-pub struct MeshVert {
-    pub xyz: [f32; 3], // 12
-    pub rgb: [un8; 4], // 16
-    pub uv:  [un16; 2], // 20
+#[derive(Default, rkyv::Archive, rkyv::Serialize)]
+pub struct ModelSet {
+    pub verts: Vec<[f32; 3]>,
+
+    pub face_vis: Vec<[u16;       3]>,
+    pub face_rgb: Vec<[[un8;  3]; 3]>,
+    pub face_ruv: Vec<[[u8; 2];   3]>,
+    pub face_tex: Vec<u16>,
+
+    pub obj_xyz: Vec<[f32; 3]>,
+    pub obj_face_0: Vec<u16>,
+}
+
+impl ModelSet {
+    fn push_object(&mut self, at: [f32; 3], verts: Vec<[f32; 3]>, faces: Vec<ModelFace>) {
+        let v0 = self.verts.len() as u16;
+        self.verts.extend_from_slice(&verts);
+
+        let f0 = self.face_vis.len() as u16;
+        for face in faces {
+            self.face_vis.push(face.vis.map(|vi| vi + v0));
+            self.face_rgb.push(face.rgb);
+            self.face_ruv.push(face.ruv);
+            self.face_tex.push(face.tex);
+        }
+
+        self.obj_xyz.push(at);
+        self.obj_face_0.push(f0);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ModelFace {
+    vis: [u16; 3],
+    rgb: [[un8; 3]; 3],
+    ruv: [[u8; 2]; 3],
+    tex: u16,
 }
 
 #[derive(Default, rkyv::Archive, rkyv::Serialize)]
-pub struct Mesh {
-    pub verts: Vec<MeshVert>,
-    pub idxs:  Vec<u32>,
-}
-
-// TODO gross. improve.
-#[derive(rkyv::Archive, rkyv::Serialize)]
-pub struct Sprite {
-    pub xyz: [f32; 3],
-    pub wh:  [f32; 2],
-    pub rgb: [un8; 4],
-    pub uvs: [un16; 4],
+pub struct Sprites {
+    pub xyz: Vec<[f32; 3]>,
+    pub wh:  Vec<[f32; 2]>,
+    pub rgb: Vec<[un8; 3]>,
+    pub tex: Vec<u16>,
 }
 
 #[derive(rkyv::Archive, rkyv::Serialize)]
 pub struct Scene {
-    pub mesh: Rc<Mesh>,
-    pub objects: Vec<SceneObject>,
-    pub sprites: Vec<Sprite>,
-}
-
-#[derive(rkyv::Archive, rkyv::Serialize)]
-pub struct SceneObject {
-    pub xyz: [i32; 3],
-    pub start: u32,
-    pub count: u32,
+    pub mset: ModelSet,
+    pub sprites: Sprites,
 }
 
 #[derive(rkyv::Archive, rkyv::Serialize)]
@@ -108,10 +125,10 @@ pub struct RoadModel {
 pub struct Track {
     pub road_model: RoadModel,
     pub road_iset: ImageSet,
-    pub scenery_scene: Rc<Scene>,
-    pub scenery_image: Rc<Image>,
-    pub sky_scene: Rc<Scene>,
-    pub sky_image: Rc<Image>,
+    pub scenery_scene: Scene,
+    pub scenery_iset: ImageSet,
+    pub sky_mset: ModelSet,
+    pub sky_iset: ImageSet,
     pub graph: TrackGraph,
 }
 
@@ -132,9 +149,9 @@ pub struct Font {
 
 #[derive(rkyv::Archive, rkyv::Serialize)]
 pub struct Root {
-    pub tracks: Assets<Track>,
-    pub ship_scene: Rc<Scene>,
-    pub ship_image: Rc<Image>,
+    pub tracks: HashMap<String, Track>,
+    pub ship_mset: ModelSet,
+    pub ship_iset: ImageSet,
     pub fonts: HashMap<String, Font>,
 }
 
@@ -157,8 +174,6 @@ impl Root {
 }
 
 pub type Bundle = ArchivedRoot;
-
-pub type Assets<T> = HashMap<String, T>;
 
 pub use util::unorm::*;
 

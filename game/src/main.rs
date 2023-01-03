@@ -27,7 +27,6 @@ fn main() {
 
     // process arguments
     let track_name = std::env::args().nth(1);
-        //.map(|arg| arg.expect("usage: formula-rust \x1b[3m<track-name>\x1b[0m"));
     log::info!("selected track: {track_name:?}");
 
     // bring up graphics
@@ -66,23 +65,25 @@ fn main() {
     };
     log::info!("loading {track_name}");
 
-    let (road_mesh, road_tex) = {
-        let atlas = atlas::Atlas::build(&track.road_iset).unwrap();
-        let mesh = road::RoadMesh::build(&display, &track.road_model, &atlas);
-        let image = atlas.into_image();
-        let tex = render::make_texture_raw(
-            &display,
-            image.wide() as u16,
-            image.high() as u16,
-            bytemuck::cast_slice(image.try_as_slice().unwrap())
-        );
-        (mesh, tex)
+    let road_mesh = {
+        let atlas = atlas::Atlas::build(&display, &track.road_iset).unwrap();
+        road::RoadMesh::build(&display, &track.road_model, atlas)
     };
 
-    let scenery = render::Scene::load(&display, &track.scenery_scene, &track.scenery_image);
-    let sky = render::Scene::load(&display, &track.sky_scene, &track.sky_image);
+    let scenery = {
+        let atlas = atlas::Atlas::build(&display, &track.scenery_iset).unwrap();
+        render::ModelSet::load(&display, &track.scenery_scene.mset, atlas).unwrap()
+    };
 
-    let ships = render::Scene::load(&display, &bundle.ship_scene, &bundle.ship_image);
+    let sky = {
+        let atlas = atlas::Atlas::build(&display, &track.sky_iset).unwrap();
+        render::ModelSet::load(&display, &track.sky_mset, atlas).unwrap()
+    };
+
+    let ships = {
+        let atlas = atlas::Atlas::build(&display, &bundle.ship_iset).unwrap();
+        render::ModelSet::load(&display, &bundle.ship_mset, atlas).unwrap()
+    };
 
     let fonts = ["Amalgama", "2097", "Fusion", "supErphoniX2", "WO3", "X2"]
         .into_iter()
@@ -210,14 +211,14 @@ fn main() {
                     gl.Enable(gl::CULL_FACE);
                     gl.Disable(gl::DEPTH_TEST);
                     gl.DepthMask(gl::FALSE);
-                    sky.draw(gl, &shader, cam_xform.translation);
+                    sky.draw(gl, &shader);//, cam_xform.translation);
 
                     shader.select(gl, world_to_clip);
                     gl.Enable(gl::DEPTH_TEST);
                     gl.DepthMask(gl::TRUE);
-                    scenery.draw(gl, &shader, cam_xform.translation);
+                    scenery.draw(gl, &shader);//, cam_xform.translation);
 
-                    let ship_params = (0..ships.n_objects())
+                    let ship_params = (0..ships.object_count())
                         .map(|i| (i, uv::Vec3::unit_x() * 800. * i as f32));
                     ships.draw_objects(gl, &shader, ship_params);
 
@@ -234,7 +235,7 @@ fn main() {
                         man.draw(gl, &shader, -300., 0.5, p+uv::Vec3::new(0., -500., 0.));
                     }*/
 
-                    gl.BindTexture(gl::TEXTURE_2D, road_tex);
+                    //gl.BindTexture(gl::TEXTURE_2D, road_tex);
                     road_mesh.draw(gl, &shader);
                     /*gl.BindVertexArray(road_vao);
                     gl.BindTexture(gl::TEXTURE_2D, road_tex);

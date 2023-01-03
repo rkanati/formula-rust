@@ -1,13 +1,11 @@
-mod atlas;
+//mod atlas;
 mod font;
-mod prm;
 mod road;
 mod image_set;
+mod model;
 
 use {
-    atlas::Atlas,
-    prm::Prm,
-    std::{rc::Rc, collections::HashMap},
+    std::collections::HashMap,
     anyhow::{Result as Anyhow, Context as _},
     camino::{Utf8Path as Path, Utf8PathBuf as PathBuf},
 };
@@ -55,17 +53,17 @@ fn make_fonts(bundler: &mut Bundler, fonts_dir: &Path) -> Anyhow<()> {
 }
 
 fn make_sky(bundler: &mut Bundler, track_name: &Path)
-    -> Anyhow<(Rc<crate::Scene>, Rc<crate::Image>)>
+    -> Anyhow<(crate::ModelSet, crate::ImageSet)>
 {
-    let (image, atlas) = bundler.atlas(&track_name.join("sky.cmp"))?;
-    let scene = bundler.scene(&track_name.join("sky.prm"), &atlas)?;
-    Ok((scene, image))
+    let iset = bundler.image_set(&track_name.join("sky.cmp"), None)?;
+    let mset = bundler.model_set(&track_name.join("sky.prm"))?;
+    Ok((mset, iset))
 }
 
 fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<()> {
-    let (sky_scene, sky_image) = make_sky(bundler, track_name)?;
-    let (scenery_image, scenery_atlas) = bundler.atlas(&track_name.join("scene.cmp"))?;
-    let scenery_scene = bundler.scene(&track_name.join("scene.prm"), &scenery_atlas)?;
+    let (sky_mset, sky_iset) = make_sky(bundler, track_name)?;
+    let scenery_scene = bundler.scene(&track_name.join("scene.prm"))?;
+    let scenery_iset = bundler.image_set(&track_name.join("scene.cmp"), None)?;
 
     let (road_model, graph, road_iset) = {
         let iset = bundler.image_set(
@@ -82,8 +80,8 @@ fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<()> {
 
     let track = crate::Track {
         road_model, road_iset,
-        scenery_scene, scenery_image,
-        sky_scene, sky_image,
+        scenery_scene, scenery_iset,
+        sky_mset, sky_iset,
         graph,
     };
 
@@ -93,24 +91,21 @@ fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<()> {
 
 fn make_ships(bundler: &mut Bundler) -> Anyhow<()> {
     log::info!("making ships");
-    let (image, atlas) = bundler.atlas("common/allsh.cmp".into())?;
-    let scene = bundler.scene("common/allsh.prm".into(), atlas.as_ref())?;
-    bundler.ship_image = Some(image);
-    bundler.ship_scene = Some(scene);
+    let iset = bundler.image_set("common/allsh.cmp".into(), None)?;
+    let mset = bundler.model_set("common/allsh.prm".into())?;
+    bundler.ship_iset = Some(iset);
+    bundler.ship_mset = Some(mset);
     Ok(())
 }
 
 #[derive(Default)]
 struct Bundler {
     wipeout_dir: PathBuf,
-    images: HashMap<u64, (Rc<crate::Image>, Rc<Atlas>)>,
-    meshes: HashMap<u64, Rc<crate::Mesh>>,
-    scenes: HashMap<u64, Rc<crate::Scene>>,
-    fonts: HashMap<String, crate::Font>,
 
-    tracks: crate::Assets<crate::Track>,
-    ship_scene: Option<Rc<crate::Scene>>,
-    ship_image: Option<Rc<crate::Image>>,
+    tracks: HashMap<String, crate::Track>,
+    ship_mset: Option<crate::ModelSet>,
+    ship_iset: Option<crate::ImageSet>,
+    fonts: HashMap<String, crate::Font>,
 }
 
 impl Bundler {
@@ -127,11 +122,11 @@ impl Bundler {
     }
 
     fn bake(self) -> Anyhow<Vec<u8>> {
-        let Bundler{tracks, ship_scene, ship_image, ..} = self;
-        let ship_scene = ship_scene.unwrap();
-        let ship_image = ship_image.unwrap();
+        let tracks = self.tracks;
+        let ship_mset = self.ship_mset.unwrap();
+        let ship_iset = self.ship_iset.unwrap();
         let fonts = self.fonts;
-        let root = crate::Root{tracks, ship_scene, ship_image, fonts};
+        let root = crate::Root{tracks, ship_mset, ship_iset, fonts};
         let mut buffer = Vec::with_capacity(128 << 20);
         root.bake(&mut buffer)?;
         let compressed = lz4_flex::compress_prepend_size(&buffer);
@@ -146,7 +141,7 @@ impl Bundler {
         image_set::build(label, &cmp, ttf.as_deref())
     }
 
-    fn atlas(&mut self, cmp_path: &Path)
+    /*fn atlas(&mut self, cmp_path: &Path)
         -> Anyhow<(Rc<crate::Image>, Rc<Atlas>)>
     {
         let cmp = self.load(cmp_path)?;
@@ -163,9 +158,21 @@ impl Bundler {
 
         self.images.insert(hash, (image.clone(), atlas.clone()));
         Ok((image, atlas))
+    }*/
+
+    fn scene(&mut self, prm_path: &Path) -> Anyhow<crate::Scene> {
+        let prm = self.load(prm_path)?;
+        let debug_label = prm_path.as_str();
+        model::build_scene(&prm)
     }
 
-    fn scene(&mut self, prm_path: &Path, atlas: &Atlas) -> Anyhow<Rc<crate::Scene>> {
+    fn model_set(&mut self, prm_path: &Path) -> Anyhow<crate::ModelSet> {
+        let prm = self.load(prm_path)?;
+        let debug_label = prm_path.as_str();
+        model::build(&prm)
+    }
+
+    /*fn scene(&mut self, prm_path: &Path, atlas: &Atlas) -> Anyhow<Rc<crate::Scene>> {
         let prm = self.load(prm_path)?;
         let hash = util::fnv1a_64(&prm);
         if let Some(scene) = self.scenes.get(&hash) {
@@ -180,7 +187,7 @@ impl Bundler {
         let scene = Rc::new(crate::Scene{mesh, objects, sprites});
         self.scenes.insert(hash, scene.clone());
         Ok(scene)
-    }
+    }*/
 }
 
 #[repr(C, align(4))]

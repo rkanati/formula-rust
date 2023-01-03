@@ -6,13 +6,16 @@
         - 🟠 alpha testing
             - 🔴 selective
     - 🟠 flythrough camera
-        - 🔴 debug/smooth out cr-spline
+        - 🔘 debug/smooth out cr-spline
+        - 🔴 jumps
+        - 🔴 iron out consistent glitches on some tracks
     - 🔘 sprites
 - 🟠 input
     - 🔘 debug keyboard controls
     - 🔴 pad support
 - 🟠 assets
     - 🟠 track extraction
+        - 🔴 bake scenery objects together
         - 🟠 visuals
             - 🔘 basic mesh
             - 🔘 base textures
@@ -30,8 +33,8 @@
         - 🔘 basic conversion
         - 🔘 qoi encoding
         - 🔴 correct alpha extraction
-        - 🟠 atlases
-            - 🔴 pack individual + build atlases at load
+        - 🔘 atlases
+            - 🔘 pack individual + build atlases at load
                 - better compression
     - 🟠 asset bundling
         - 🔘 lz4 compression

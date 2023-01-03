@@ -1,4 +1,5 @@
 use {
+    crate::gl::prelude::*,
     bundle::rapid_qoi,
     pack_rects::prelude::*,
     ultraviolet as uv,
@@ -8,7 +9,7 @@ use {
 };
 
 pub struct Atlas {
-    image: Pixmap<Vec<Rgba>>,
+    tex: GLuint,
     scales: uv::Vec4,
     uivis: Vec<uv::IVec4>,
 }
@@ -17,7 +18,7 @@ const N_REDUCTIONS: usize = 4;
 const ALIGN: i32 = 1 << N_REDUCTIONS;
 
 impl Atlas {
-    pub fn build(iset: &bundle::ArchivedImageSet) -> Anyhow<Atlas> {
+    pub fn build(gl: &Gl, iset: &bundle::ArchivedImageSet) -> Anyhow<Atlas> {
         let mut pixmaps = {
             let (s0, s1, s2) = &mut ([[0; 4]; 64], [0, 0, 0, 255], 0);
             let mut input = &iset.qoi_stream[..];
@@ -116,15 +117,25 @@ impl Atlas {
             image::ColorType::Rgba8,
         ).unwrap();
 
-        Ok(Atlas{image, scales, uivis})
+        let tex = crate::render::make_texture(gl, &image.borrow());
+
+        Ok(Atlas{tex, scales, uivis})
     }
 
-    pub fn into_image(self) -> Pixmap<Vec<Rgba>> {
-        self.image
+    pub fn into_texture(self) -> GLuint {
+        self.tex
     }
 
-    pub fn lookup_rect(&self, index: u8) -> uv::Vec4 {
-        uv::Vec4::from(self.uivis[index as usize]) * self.scales
+    pub fn lookup_rect(&self, index: usize) -> uv::Vec4 {
+        let index = index.min(self.uivis.len() - 1);
+        uv::Vec4::from(self.uivis[index]) * self.scales
+    }
+
+    pub fn lookup(&self, index: usize, offset: [u8; 2]) -> uv::Vec2 {
+        let index = index.min(self.uivis.len() - 1);
+        let base = self.uivis[index].xy();
+        let offset = uv::IVec2::from(offset.map(|x| x as i32));
+        uv::Vec2::from(base + offset) * self.scales.xy()
     }
 }
 

@@ -1,5 +1,5 @@
 use {
-    crate::{bundler::atlas::Atlas, be::Be},
+    crate::be::Be,
     anyhow::Result as Anyhow,
     bytemuck as bm,
     ultraviolet as uv,

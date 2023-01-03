@@ -1,6 +1,12 @@
+mod model_set;
+pub use model_set::ModelSet;
+
 use {
     crate::gl::prelude::*,
     ultraviolet as uv,
+    pixmap::{Pixmap, Rgba},
+    bytemuck as bm,
+    util::{un8, un16},
 };
 
 pub struct BasicShader {
@@ -175,19 +181,7 @@ pub fn make_arrays<E, I: GlPodType> (
     }
 }
 
-pub fn make_mesh(gl: &Gl, mesh: &bundle::ArchivedMesh) -> GLuint {
-    make_arrays(
-        gl,
-        &mesh.verts[..],
-        &mesh.idxs[..],
-        &[  Attrib::Float{n: 3, off:  0},
-            Attrib::Norm{n: 4, off: 12, ty: gl::UNSIGNED_BYTE},
-            Attrib::Norm{n: 2, off: 16, ty: gl::UNSIGNED_SHORT},
-        ]
-    )
-}
-
-pub fn make_sprites(gl: &Gl, sprites: &[bundle::ArchivedSprite]) -> GLuint {
+/*pub fn make_sprites(gl: &Gl, sprites: &[bundle::ArchivedSprite]) -> GLuint {
     #[repr(C)] struct V([f32; 2], [bundle::ArchivedUNorm16; 2]);
 
     let data = sprites.iter()
@@ -208,7 +202,7 @@ pub fn make_sprites(gl: &Gl, sprites: &[bundle::ArchivedSprite]) -> GLuint {
             Attrib::Norm{n: 2, off: 8, ty: gl::UNSIGNED_SHORT},
         ]
     )
-}
+}*/
 
 pub fn make_blank_texture(gl: &Gl) -> GLuint {
     unsafe {
@@ -231,7 +225,7 @@ pub fn make_blank_texture(gl: &Gl) -> GLuint {
     }
 }
 
-pub fn reduce(src: &[u8], sw: usize, sh: usize) -> Option<(Vec<u8>, usize, usize)> {
+fn reduce(src: &[u8], sw: usize, sh: usize) -> Option<(Vec<u8>, usize, usize)> {
     if sw % 2 != 0 || sh % 2 != 0 { return None; }
 
     let dw = sw / 2;
@@ -258,8 +252,13 @@ pub fn reduce(src: &[u8], sw: usize, sh: usize) -> Option<(Vec<u8>, usize, usize
 }
 
 
-pub fn make_texture(gl: &Gl, image: &bundle::ArchivedImage) -> GLuint {
-    let qoi = bundle::rapid_qoi::Qoi {
+pub fn make_texture(gl: &Gl, image: &Pixmap<&[Rgba]>) -> GLuint {
+    make_texture_raw(gl,
+        image.wide() as u16,
+        image.high() as u16,
+        bm::cast_slice(image.try_as_slice().unwrap()),
+    )
+    /*let qoi = bundle::rapid_qoi::Qoi {
         width:  image.wide as u32,
         height: image.high as u32,
         colors: bundle::rapid_qoi::Colors::Rgba,
@@ -269,7 +268,7 @@ pub fn make_texture(gl: &Gl, image: &bundle::ArchivedImage) -> GLuint {
     let (s0, s1, s2) = &mut ([[0u8; 4]; 64], [0u8, 0u8, 0u8, 0xff_u8], 0_usize);
     bundle::rapid_qoi::Qoi::decode_range(s0, s1, s2, &image.data, &mut buf).unwrap();
 
-    make_texture_raw(gl, image.wide, image.high, &buf)
+    make_texture_raw(gl, image.wide, image.high, &buf)*/
 }
 
 pub fn make_texture_raw(gl: &Gl, w: u16, h: u16, pixels: &[u8]) -> GLuint {
@@ -315,7 +314,7 @@ pub fn make_texture_raw(gl: &Gl, w: u16, h: u16, pixels: &[u8]) -> GLuint {
     tex
 }
 
-pub struct Scene<'a> {
+/*pub struct Scene<'a> {
     objs: &'a [bundle::ArchivedSceneObject],
     sprs: &'a [bundle::ArchivedSprite],
     vao: GLuint,
@@ -392,4 +391,21 @@ impl<'a> Scene<'a> {
         self.draw_objects(gl, shader, all);
         self.draw_sprites(gl, shader, eye_pos);
     }
+}*/
+
+
+#[repr(C)]
+pub struct MeshElement {
+    pub xyz: [f32; 3],
+    pub rgb: [un8; 3],
+    pub uv:  [un16; 2],
 }
+
+impl MeshElement {
+    pub const ATTRIBS: &[Attrib] = &[
+        Attrib::Float{n: 3, off: 0},
+        Attrib::Norm{n: 3, off: 12, ty: gl::UNSIGNED_BYTE},
+        Attrib::Norm{n: 2, off: 16, ty: gl::UNSIGNED_SHORT},
+    ];
+}
+
