@@ -10,57 +10,60 @@ use {
     camino::{Utf8Path as Path, Utf8PathBuf as PathBuf},
 };
 
-pub fn make_bundle(wipeout_dir: impl AsRef<Path>) -> Anyhow<Vec<u8>> {
-    let wipeout_dir = wipeout_dir.as_ref();
-    let mut bundler = Bundler::new(wipeout_dir);
-
-    make_fonts(&mut bundler, &wipeout_dir.join("fonts"))?;
-    make_tracks(&mut bundler, wipeout_dir)?;
-    make_ships(&mut bundler)?;
-
-    bundler.bake()
+pub struct Config {
+    pub wipeout_dir: PathBuf,
+    pub out_path:    PathBuf,
 }
 
-fn make_tracks(bundler: &mut Bundler, tracks_dir: &Path) -> Anyhow<()> {
+pub fn make_bundle(config: Config) -> Anyhow<()> {
+    let mut bundler = Bundler::new(config)?;
+
+    let fonts = make_fonts(&mut bundler, "fonts".into())?;
+    let tracks = make_tracks(&mut bundler, "".into())?; // TODO tracks subdir
+    let (ship_mset, ship_iset) = make_ships(&mut bundler)?;
+    make_music(&mut bundler, "music".into())?;
+
+    bundler.bake(move |aux_table| crate::Root {
+        tracks,
+        ship_mset,
+        ship_iset,
+        fonts,
+        aux_table,
+    })
+}
+
+fn make_music(bundler: &mut Bundler, music_dir: &Path) -> Anyhow<()> {
+    log::info!("making music");
+    for entry in bundler.asset_dir(music_dir).read_dir_utf8()? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {continue}
+        let Some(name) = entry.file_name().strip_suffix(".opus") else {continue};
+        bundler.aux_blob(&format!("music/{name}"), entry.path())?;
+    }
+    Ok(())
+}
+
+
+
+
+fn make_tracks(bundler: &mut Bundler, tracks_dir: &Path)
+    -> Anyhow<HashMap<String, crate::Track>>
+{
     log::info!("making tracks");
-    for entry in tracks_dir.read_dir_utf8()? {
+    let mut tracks = HashMap::new();
+    for entry in bundler.asset_dir(tracks_dir).read_dir_utf8()? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {continue}
         let entry_name = entry.file_name();
         if !entry_name.starts_with("track") {continue}
-        make_track(bundler, entry_name.into())
+        let track = make_track(bundler, entry_name.into())
             .with_context(|| format!("track: '{entry_name}'"))?;
+        tracks.insert(entry_name.into(), track);
     }
-    Ok(())
+    Ok(tracks)
 }
 
-fn make_fonts(bundler: &mut Bundler, fonts_dir: &Path) -> Anyhow<()> {
-    log::info!("making fonts");
-    for entry in fonts_dir.read_dir_utf8().with_context(|| fonts_dir.to_string())? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {continue}
-        let Some(name) = entry.path().file_stem() else {continue};
-        let ttf = bundler.load(entry.path())?;
-        let font = match font::make_font(&ttf, name) {
-            Err(font::Error::NotAFont) => continue,
-            Err(font::Error::Other(e)) => return Err(e),
-            Ok(font) => font
-        };
-        bundler.fonts.insert(name.to_owned(), font);
-    }
-    log::info!("got {} fonts", bundler.fonts.len());
-    Ok(())
-}
-
-fn make_sky(bundler: &mut Bundler, track_name: &Path)
-    -> Anyhow<(crate::ModelSet, crate::ImageSet)>
-{
-    let iset = bundler.image_set(&track_name.join("sky.cmp"), None)?;
-    let mset = bundler.model_set(&track_name.join("sky.prm"))?;
-    Ok((mset, iset))
-}
-
-fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<()> {
+fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<crate::Track> {
     let (sky_mset, sky_iset) = make_sky(bundler, track_name)?;
     let scenery_scene = bundler.scene(&track_name.join("scene.prm"))?;
     let scenery_iset = bundler.image_set(&track_name.join("scene.cmp"), None)?;
@@ -78,67 +81,96 @@ fn make_track(bundler: &mut Bundler, track_name: &Path) -> Anyhow<()> {
         (model, graph, iset)
     };
 
-    let track = crate::Track {
+    Ok(crate::Track {
         road_model, road_iset,
         scenery_scene, scenery_iset,
         sky_mset, sky_iset,
         graph,
-    };
-
-    bundler.tracks.insert(track_name.to_string(), track);
-    Ok(())
+    })
 }
 
-fn make_ships(bundler: &mut Bundler) -> Anyhow<()> {
+
+fn make_fonts(bundler: &mut Bundler, fonts_dir: &Path)
+    -> Anyhow<HashMap<String, crate::Font>>
+{
+    log::info!("making fonts");
+    let mut fonts = HashMap::new();
+    for entry in bundler.asset_dir(fonts_dir).read_dir_utf8()
+        .with_context(|| fonts_dir.to_string())?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {continue}
+        let Some(name) = entry.path().file_stem() else {continue};
+        let ttf = bundler.load(entry.path())?;
+        let font = match font::make_font(&ttf) {
+            Err(font::Error::NotAFont) => continue,
+            Err(font::Error::Other(e)) => return Err(e),
+            Ok(font) => font
+        };
+        fonts.insert(name.into(), font);
+    }
+    Ok(fonts)
+}
+
+fn make_sky(bundler: &mut Bundler, track_name: &Path)
+    -> Anyhow<(crate::ModelSet, crate::ImageSet)>
+{
+    let iset = bundler.image_set(&track_name.join("sky.cmp"), None)?;
+    let mset = bundler.model_set(&track_name.join("sky.prm"))?;
+    Ok((mset, iset))
+}
+
+fn make_ships(bundler: &mut Bundler) -> Anyhow<(crate::ModelSet, crate::ImageSet)> {
     log::info!("making ships");
     let iset = bundler.image_set("common/allsh.cmp".into(), None)?;
     let mset = bundler.model_set("common/allsh.prm".into())?;
-    bundler.ship_iset = Some(iset);
-    bundler.ship_mset = Some(mset);
-    Ok(())
+    Ok((mset, iset))
 }
 
-#[derive(Default)]
 struct Bundler {
-    wipeout_dir: PathBuf,
-
-    tracks: HashMap<String, crate::Track>,
-    ship_mset: Option<crate::ModelSet>,
-    ship_iset: Option<crate::ImageSet>,
-    fonts: HashMap<String, crate::Font>,
+    config: Config,
+    aux_file: std::io::BufWriter<std::fs::File>,
+    aux_tab: HashMap<String, u64>,
 }
 
 impl Bundler {
-    fn load(&self, path: impl AsRef<Path>) -> Anyhow<Vec<u8>> {
-        let path = self.wipeout_dir.join(path);
-        use anyhow::Context as _;
-        let bytes = std::fs::read(&path).context(path)?;
-        Ok(bytes)
+    fn new(config: Config) -> Anyhow<Self> {
+        let aux_path = config.out_path.with_file_name("bundle-aux");
+        let aux_file = std::io::BufWriter::with_capacity(
+            0x10_0000,
+            std::fs::File::create(&aux_path)
+                .with_context(|| format!("aux_path: {aux_path}"))?
+        );
+        let aux_tab = HashMap::new();
+        Ok(Bundler{config, aux_file, aux_tab})
     }
 
-    fn new(wipeout_dir: impl AsRef<Path>) -> Self {
-        let wipeout_dir = wipeout_dir.as_ref().to_owned();
-        Bundler{wipeout_dir, ..Default::default()}
+    fn asset_dir(&self, rel: &Path) -> PathBuf {
+        self.config.wipeout_dir.join(rel)
     }
 
-    fn bake(self) -> Anyhow<Vec<u8>> {
-        let tracks = self.tracks;
-        let ship_mset = self.ship_mset.unwrap();
-        let ship_iset = self.ship_iset.unwrap();
-        let fonts = self.fonts;
-        let root = crate::Root{tracks, ship_mset, ship_iset, fonts};
+    fn bake(self, f: impl FnOnce(HashMap<String, u64>) -> crate::Root) -> Anyhow<()> {
+        let root = f(self.aux_tab);
         let mut buffer = Vec::with_capacity(128 << 20);
         root.bake(&mut buffer)?;
         let compressed = lz4_flex::compress_prepend_size(&buffer);
-        Ok(compressed)
+        std::fs::write(self.config.out_path, compressed)?;
+        Ok(())
+    }
+
+    fn load(&self, path: impl AsRef<Path>) -> Anyhow<Vec<u8>> {
+        let path = self.config.wipeout_dir.join(path);
+        use anyhow::Context as _;
+        let bytes = std::fs::read(&path).context(path)?;
+        Ok(bytes)
     }
 
     // TODO dedup
     fn image_set(&mut self, cmp_path: &Path, ttf_path: Option<&Path>) -> Anyhow<crate::ImageSet> {
         let cmp = self.load(cmp_path)?;
         let ttf = ttf_path.map(|p| self.load(p)).transpose()?;
-        let label = cmp_path.components().nth(0).unwrap().as_str();
-        image_set::build(label, &cmp, ttf.as_deref())
+        let label = cmp_path.as_str().replace("/", "_");
+        image_set::build(&label, &cmp, ttf.as_deref())
     }
 
     /*fn atlas(&mut self, cmp_path: &Path)
@@ -162,14 +194,23 @@ impl Bundler {
 
     fn scene(&mut self, prm_path: &Path) -> Anyhow<crate::Scene> {
         let prm = self.load(prm_path)?;
-        let debug_label = prm_path.as_str();
+        //let debug_label = prm_path.as_str();
         model::build_scene(&prm)
     }
 
     fn model_set(&mut self, prm_path: &Path) -> Anyhow<crate::ModelSet> {
         let prm = self.load(prm_path)?;
-        let debug_label = prm_path.as_str();
+        //let debug_label = prm_path.as_str();
         model::build(&prm)
+    }
+
+    fn aux_blob(&mut self, name: &str, path: &Path) -> Anyhow<()> {
+        use std::io::Seek as _;
+        let start = self.aux_file.stream_position()?;
+        let mut reader = std::io::BufReader::with_capacity(0x10_0000, std::fs::File::open(path)?);
+        std::io::copy(&mut reader, &mut self.aux_file)?;
+        self.aux_tab.insert(name.into(), start);
+        Ok(())
     }
 
     /*fn scene(&mut self, prm_path: &Path, atlas: &Atlas) -> Anyhow<Rc<crate::Scene>> {
@@ -195,7 +236,7 @@ impl Bundler {
 struct RawRgbx([u8; 4]);
 
 impl RawRgbx {
-    const MAGENTA: Self = Self([0x80, 0x00, 0x80, 0xff]);
+    //const MAGENTA: Self = Self([0x80, 0x00, 0x80, 0xff]);
 }
 
 impl From<RawRgbx> for [f32; 3] {

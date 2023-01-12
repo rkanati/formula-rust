@@ -1,6 +1,10 @@
+#![feature(array_windows)]
 #![feature(array_zip)]
-#![feature(iter_array_chunks)]
+#![feature(get_many_mut)]
 #![feature(int_roundings)]
+#![feature(iter_array_chunks)]
+#![feature(iter_collect_into)]
+#![feature(slice_take)]
 
 mod atlas;
 mod camera;
@@ -48,6 +52,13 @@ fn main() {
             bytes.len() >> 20,
             decomp_start.elapsed().as_secs());
 
+        /*let fonts_size = bundle.fonts.values()
+            .map(|f| std::mem::size_of_val(&f.verts[..]) + std::mem::size_of_val(&f.idxs[..]))
+            .sum::<usize>();
+        log::debug!("font data size: {fonts_size}");*/
+
+        let aux = include_bytes!(concat!(env!("BUNDLE_PATH"), "-aux"));
+
         bundle
     };
 
@@ -66,29 +77,37 @@ fn main() {
     log::info!("loading {track_name}");
 
     let road_mesh = {
-        let atlas = atlas::Atlas::build(&display, &track.road_iset).unwrap();
+        log::debug!("loading {track_name}: road");
+        let atlas = atlas::Atlas::build(&display, &track.road_iset, "road").unwrap();
         road::RoadMesh::build(&display, &track.road_model, atlas)
     };
 
     let scenery = {
-        let atlas = atlas::Atlas::build(&display, &track.scenery_iset).unwrap();
+        log::debug!("loading {track_name}: scenery");
+        let atlas = atlas::Atlas::build(&display, &track.scenery_iset, "scenery").unwrap();
         render::ModelSet::load(&display, &track.scenery_scene.mset, atlas).unwrap()
     };
 
     let sky = {
-        let atlas = atlas::Atlas::build(&display, &track.sky_iset).unwrap();
+        log::debug!("loading {track_name}: sky");
+        let atlas = atlas::Atlas::build(&display, &track.sky_iset, "sky").unwrap();
         render::ModelSet::load(&display, &track.sky_mset, atlas).unwrap()
     };
 
     let ships = {
-        let atlas = atlas::Atlas::build(&display, &bundle.ship_iset).unwrap();
+        log::debug!("loading {track_name}: ships");
+        let atlas = atlas::Atlas::build(&display, &bundle.ship_iset, "ships").unwrap();
         render::ModelSet::load(&display, &bundle.ship_mset, atlas).unwrap()
     };
 
+    for k in bundle.fonts.keys() {
+        log::debug!("font: {k}");
+    }
+
     let fonts = ["Amalgama", "2097", "Fusion", "supErphoniX2", "WO3", "X2"]
         .into_iter()
-        .map(|name| Font::load(&display, name, &bundle.fonts[name], blank_tex))
-        .collect::<Vec<_>>();
+        .map(|name| Font::load(&display, &bundle.fonts[name], blank_tex))
+        .collect::<Result<Vec<_>, _>>().unwrap();
 
     let _title = fonts[0].bake_run(font::Anchor::Center, "formula'rs\"");
     let silly = fonts[0].bake_run(font::Anchor::Center, "Hold © tight!");
@@ -107,11 +126,6 @@ fn main() {
                 WinEv::CloseRequested => flow.set_exit(),
 
                 WinEv::Resized(size) => display.resize(size.into()),
-                    /*=> surf.resize(
-                    &ctx,
-                    size.width.try_into().unwrap(),
-                    size.height.try_into().unwrap(),
-                ),*/
 
                 WinEv::KeyboardInput{input, ..} => {
                     use winit::event::VirtualKeyCode as Vk;
@@ -149,7 +163,6 @@ fn main() {
             }
 
             Ev::RedrawEventsCleared => {
-                //let cam_xform = debug_cam.update();
                 let cam_xform = cam.update();
 
                 let [w, h] = display.dims().map(|x| x as i32);
@@ -179,9 +192,6 @@ fn main() {
                     * cam_xform.rotation.reversed().into_matrix().into_homogeneous()
                     * uv::Mat4::from_translation(-cam_xform.translation);
 
-                /*let ui_to_clip = uv::projection::rh_ydown::orthographic_gl(
-                    -aspect, aspect, 1.0, -1.0, -1.0, 1.0
-                );*/
                 let ui_to_clip = {
                     let vfov: f32 = 90f32.to_radians();
                     let proj = uv::projection::perspective_gl(
@@ -231,28 +241,13 @@ fn main() {
                         );
                     }
 
-                    /*for &p in &flythru_cam.points {
-                        man.draw(gl, &shader, -300., 0.5, p+uv::Vec3::new(0., -500., 0.));
-                    }*/
-
-                    //gl.BindTexture(gl::TEXTURE_2D, road_tex);
                     road_mesh.draw(gl, &shader);
-                    /*gl.BindVertexArray(road_vao);
-                    gl.BindTexture(gl::TEXTURE_2D, road_tex);
-                    gl.Disable(gl::CULL_FACE);
-                    shader.setup(gl, |params| params.3 = false);
-                    gl.DrawElements(
-                        gl::TRIANGLES,
-                        road_mesh_len as _,
-                        gl::UNSIGNED_INT,
-                        std::ptr::null(),
-                    );*/
 
                     gl.Disable(gl::DEPTH_TEST);
                     shader.select(gl, ui_to_clip);
                     gl.VertexAttrib4f(1, 1., 1., 0., 1.);
                     //title.draw(gl, 0.3, 0.1, uv::Vec3::new(0., 0.7, 0.));
-                    silly.draw(gl, &shader, 0.2, 0.1, uv::Vec3::new(0., -2.8, 2.));
+                    //silly.draw(gl, &shader, 0.2, 0.1, uv::Vec3::new(0., -2.8, 2.));
                 }
 
                 display.finish_frame();

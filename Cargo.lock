@@ -68,7 +68,7 @@ dependencies = [
  "lz4_flex",
  "pack-rects 0.1.0",
  "pixmap",
- "rapid-qoi",
+ "qoit",
  "rkyv",
  "thiserror",
  "trianglyph",
@@ -385,6 +385,7 @@ dependencies = [
  "glutin-winit",
  "image",
  "log",
+ "lyon_tessellation",
  "pack-rects 0.1.0 (git+file:///home/sabi/projects/pack-rects?rev=52f89f9)",
  "pixmap",
  "raw-window-handle 0.5.0",
@@ -929,21 +930,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "qoit"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbe448f377a7d6961e30f5955f9b8d106c3f5e449d493ee1b125c1d43c2b5179"
 dependencies = [
  "proc-macro2",
-]
-
-[[package]]
-name = "rapid-qoi"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "965d4fa3abc71547be1527fa00e08c1114f972d3d2b9209563b420d301a257ac"
-dependencies = [
- "bytemuck",
 ]
 
 [[package]]

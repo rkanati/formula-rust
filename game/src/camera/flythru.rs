@@ -54,12 +54,6 @@ impl FlythruCam {
         let hs = BASIS * ts;
         let [h0,h1,h2,h3]: [f32; 4] = hs.into();
 
-        /*
-        let h0 = ts.dot([ 2., -3., 0., 1.].into());
-        let h1 = ts.dot([ 1., -2., 1., 0.].into());
-        let h2 = ts.dot([ 1., -1., 0., 0.].into());
-        let h3 = ts.dot([-2.,  3., 0., 0.].into());*/
-
         let [p0, p1, p2, p3]: [uv::Vec3; 4] = [i0-1, i0, i0+1, i0+2]
             .map(|i| self.points[i.rem_euclid(self.points.len() as i32) as usize]);
 

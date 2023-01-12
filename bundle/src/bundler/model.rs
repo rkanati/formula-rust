@@ -123,7 +123,9 @@ struct RawObject {
     n_verts: Be<u16>,   //  18
     _pad0: [u8; 14],    //  32
     n_prims: Be<u16>,   //  34
-    _pad1: [u8; 82],
+    _pad1a: [u8; 32],
+    _pad1b: [u8; 32],
+    _pad1c: [u8; 18],
     pos: [Be<i32>; 3],  // 128
     _pad4: [u8; 16],    // 144
 }

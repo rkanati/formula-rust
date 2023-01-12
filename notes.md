@@ -80,3 +80,7 @@
         - f500 ang:   poor; no case; fair coverage (worse wo3)
         - assegai:    poor; no case; awful coverage
 
+# bad texture that breaks rapid-qoi
+
+track16, scene.cmp[8], 148x75
+

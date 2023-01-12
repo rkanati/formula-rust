@@ -1,6 +1,6 @@
-
 #![feature(array_chunks)]
 #![feature(array_zip)]
+#![feature(int_roundings)]
 #![feature(iter_array_chunks)]
 
 pub mod lzss;
@@ -18,9 +18,10 @@ pub fn load_cmp(cmp: &[u8]) -> Anyhow<Vec<Image>> {
     let (lens, data) = cmp[4..].split_at(n_tims as usize * 4);
     let mut tims = lzss::expand(data);
     lens.array_chunks()
-        .map(|&len| {
+        .enumerate()
+        .map(|(i, &len)| {
             let len = u32::from_le_bytes(len) as usize;
-            if len == 0 {return Ok(Pixmap::new(1, 1, Rgba::TRANSPARENT))}
+            assert_ne!(len, 0);
             let rest = tims.split_off(len);
             let tim = std::mem::replace(&mut tims, rest);
             load_tim(&tim)
@@ -62,25 +63,31 @@ fn from_indexed(tim: &[u8], pixel_type: u8) -> Anyhow<Image> {
 
     if bs.len() < 12 {bail!("truncated tim")}
     let (header, bs) = bs.split_at(12);
-    let pixels_len = read::<u32>(&header[0..4]) as usize - 12;
+    let data_len = read::<u32>(&header[0..4]) as usize - 12;
     let wide = read::<u16>(&header[ 8..10]);
     let high = read::<u16>(&header[10..12]);
-    let pixels = bs.get(..pixels_len).ok_or(anyhow!("truncated tim"))?;
+    let data = bs.get(..data_len).ok_or(anyhow!("truncated tim"))?;
 
-    let (wide, pixels) = if four_bit {
-        let pixels = pixels.iter().copied()
+    //let wide = wide.next_multiple_of(2);
+
+    let (wide, mut pixels) = if four_bit {
+        let pixels = data.iter().copied()//chunks_exact((wide as usize * 2).next_multiple_of(4))
+            //.flat_map(|row| &row[..wide as usize * 2])
             .flat_map(|b| [(b & 0xf) as usize, (b >> 4) as usize])
             .map(|i| clut[i])
-            .collect();
+            .collect::<Vec<_>>();
         (wide * 4, pixels)
     }
     else {
-        let pixels = pixels.iter().copied()
+        let pixels = data.iter().copied()//chunks_exact((wide as usize * 2).next_multiple_of(4))
+            //.flat_map(|row| &row[..wide as usize * 2])
             .map(|i| clut[i as usize])
-            .collect();
+            .collect::<Vec<_>>();
         (wide * 2, pixels)
     };
 
+    //debug_assert_eq!(pixels.len(), (wide * high) as usize);
+    pixels.resize(wide as usize * high as usize, Rgba::TRANSPARENT);
     let pm = Pixmap::new_from_pixels(pixels, 0, 1, wide.into(), high.into()).unwrap();
     Ok(pm)
 }

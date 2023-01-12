@@ -67,7 +67,10 @@ struct RawSection {
     prev:     Be<u32>,      //    4 ..   8
     next:     Be<u32>,      //    8 ..  12
     centre:   [Be<i32>; 3], //   12 ..  24
-    _pad0:    [u8; 116],    //   24 .. 140
+    _pad0a:   [u8; 32],     //   24 ..
+    _pad0b:   [u8; 32],
+    _pad0c:   [u8; 32],
+    _pad0d:   [u8; 20],     //      .. 140
     face_i0:  Be<u32>,      //  140 .. 144
     n_faces:  Be<u16>,      //  144 .. 146
     _pad1:    [u8; 4],      //  146 .. 150

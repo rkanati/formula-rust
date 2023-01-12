@@ -113,6 +113,7 @@ impl<Pixels> Pixmap<Pixels> where Pixels: AsRef<[Rgba]> {
         -> Option<Self>
     {
         let meta = Meta::try_new(offset, pitch, wide, high)?;
+        meta.validate(pixels.as_ref().len())?;
         Some(Self{pixels, meta})
     }
 

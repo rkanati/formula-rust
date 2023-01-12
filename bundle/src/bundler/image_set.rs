@@ -3,7 +3,7 @@ use {
     anyhow::Result as Anyhow,
     bytemuck as bm,
     pixmap::{Pixmap, Rgba},
-    rapid_qoi::Qoi,
+    //rapid_qoi::Qoi,
 };
 
 pub fn build(label: &str, cmp: &[u8], ttf: Option<&[u8]>) -> Anyhow<crate::ImageSet> {
@@ -41,29 +41,17 @@ pub fn build(label: &str, cmp: &[u8], ttf: Option<&[u8]>) -> Anyhow<crate::Image
     }
 
     let sizes = images.iter()
-        .map(|img| (img.wide() as u16, img.high() as u16))
+        .map(|img| (img.wide().try_into().unwrap(), img.high().try_into().unwrap()))
         .collect();
 
     let mut qoi_stream = Vec::with_capacity(0x10_0000);
-    let (s0, s1, s2) = &mut ([[0u8; 4]; 64], [0u8, 0u8, 0u8, 0xff_u8], 0_usize);
+    let mut state = qoit::State::new();
     for image in images {
-        let qoi = Qoi{
-            width:  image.wide() as u32,
-            height: image.high() as u32,
-            colors: rapid_qoi::Colors::Rgba,
-        };
-        let needed = qoi.encoded_size_limit();
-        let old_len = qoi_stream.len();
-        qoi_stream.resize(old_len + needed, 0u8);
-        let encode_buf = &mut qoi_stream[old_len..];
-        let encoded_len = Qoi::encode_range(
-            s0, s1, s2,
-            bm::cast_slice(image.try_as_slice().unwrap()),
-            encode_buf,
-        ).unwrap();
-        qoi_stream.resize(old_len + encoded_len, 0);
-        qoi_stream.extend_from_slice(&[0,0,0,0,0,0,0,1]);
+        state.encode_some(&mut qoi_stream, bm::cast_slice(image.try_as_slice().unwrap()))
+            .unwrap();
     }
+    state.encode_flush(&mut qoi_stream).unwrap();
+    //qoi_stream.extend_from_slice(&[0,0,0,0,0,0,0,1]);
 
     Ok(crate::ImageSet{sizes, qoi_stream})
 }

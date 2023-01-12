@@ -13,14 +13,15 @@ formats = { path = "../formats" }
 image = { version = "0.24", default-features = false, features = ["png", "tga"] }
 log = "0.4"
 lz4_flex = "0.9"
-trianglyph = { git = "file:/home/sabi/projects/trianglyph", rev = "73eb0bd" }
-#pack-rects = { git = "file:/home/sabi/projects/pack-rects", rev = "c79581c" }
 pack-rects = { path = "/home/sabi/projects/pack-rects" }
-rapid-qoi = "0.6"
+#pack-rects = { git = "file:/home/sabi/projects/pack-rects", rev = "c79581c" }
+pixmap = { path = "../pixmap" }
+qoit = { path = "../../qoit" }
+#rapid-qoi = "0.6"
 rkyv = "0.7"
 thiserror = "1"
+trianglyph = { git = "file:/home/sabi/projects/trianglyph", rev = "73eb0bd" }
 ttf-parser = "0.18"
 ultraviolet = { version = "0.9", features = ["int"] }
 util = { path = "../util" }
-pixmap = { path = "../pixmap" }
 

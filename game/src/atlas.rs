@@ -1,11 +1,10 @@
 use {
     crate::gl::prelude::*,
-    bundle::rapid_qoi,
+    bundle::qoit,
     pack_rects::prelude::*,
     ultraviolet as uv,
     anyhow::Result as Anyhow,
     pixmap::{Pixmap, Rgba},
-    rapid_qoi::Qoi
 };
 
 pub struct Atlas {
@@ -18,29 +17,29 @@ const N_REDUCTIONS: usize = 4;
 const ALIGN: i32 = 1 << N_REDUCTIONS;
 
 impl Atlas {
-    pub fn build(gl: &Gl, iset: &bundle::ArchivedImageSet) -> Anyhow<Atlas> {
+    pub fn build(gl: &Gl, iset: &bundle::ArchivedImageSet, label: &str) -> Anyhow<Atlas> {
         let mut pixmaps = {
-            let (s0, s1, s2) = &mut ([[0; 4]; 64], [0, 0, 0, 255], 0);
+            let mut qoi_state = qoit::State::new();
             let mut input = &iset.qoi_stream[..];
-            iset.sizes.iter().copied()
-                .map(|(w, h)| {
+            log::debug!(target: "atlas", "decoding {} textures", iset.sizes.len());
+            let pixmaps = iset.sizes.iter().copied().enumerate()
+                .map(|(i, (w, h))| {
+                    log::debug!(target: "atlas", "texture {i} size: {w} {h}");
                     let mut pixels = Vec::new();
                     pixels.resize(w as usize * h as usize, Rgba::TRANSPARENT);
-                    let consumed = Qoi::decode_range(
-                        s0, s1, s2,
-                        input,
-                        bytemuck::cast_slice_mut(&mut pixels),
-                    )?;
-                    input = &input[consumed..].strip_prefix(&[0,0,0,0,0,0,0,1]).unwrap();
+                    input = qoi_state.decode_some(bytemuck::cast_slice_mut(&mut pixels), input)?;
+                    //log::debug!(target: "atlas", "next 16 bytes: {:x?}", &input[..16.min(input.len())]);
                     let pm = Pixmap::new_from_pixels(pixels, 0, 1, w as i32, h as i32).unwrap();
                     Ok(pm)
                 })
-                .collect::<Anyhow<Vec<_>>>()?
+                .collect::<Anyhow<Vec<_>>>()?;
+            //input.strip_prefix(&[0,0,0,0,0,0,0,1]).unwrap();
+            pixmaps
         };
 
         for (i, pm) in pixmaps.iter().enumerate() {
             image::save_buffer(
-                format!("debug-out/iset-{i}.tga"),
+                format!("debug-out/iset-{label}-{i}.tga"),
                 bytemuck::cast_slice(pm.try_as_slice().unwrap()),
                 pm.wide() as u32,
                 pm.high() as u32,
@@ -109,13 +108,13 @@ impl Atlas {
             })
             .collect::<Vec<_>>();
 
-        image::save_buffer(
+        /*image::save_buffer(
             "debug-out/road-atlas.tga",
             bytemuck::cast_slice(image.try_as_slice().unwrap()),
             image.wide() as u32,
             image.high() as u32,
             image::ColorType::Rgba8,
-        ).unwrap();
+        ).unwrap();*/
 
         let tex = crate::render::make_texture(gl, &image.borrow());
 

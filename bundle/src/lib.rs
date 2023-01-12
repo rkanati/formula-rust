@@ -15,33 +15,48 @@ pub mod bundler;
 
 mod reexports {
     pub use lz4_flex;
-    pub use rapid_qoi;
+    //pub use rapid_qoi;
+    pub use qoit;
+    pub use util::unorm::*;
 }
 pub use reexports::*;
 
-use std::{
-    collections::HashMap,
-    rc::Rc,
-};
+use std::collections::HashMap;
+
+
+#[derive(rkyv::Archive, rkyv::Serialize)]
+pub struct Root {
+    pub tracks: HashMap<String, Track>,
+    pub ship_mset: ModelSet,
+    pub ship_iset: ImageSet,
+    pub fonts: HashMap<String, Font>,
+    pub aux_table: HashMap<String, u64>,
+}
+
+pub type Bundle = ArchivedRoot;
+
+impl Root {
+    pub fn bake<W> (self, to: &mut W) -> anyhow::Result<()> where
+        W: std::io::Write,
+    {
+        use rkyv::ser::{serializers as sers, Serializer as _};
+        let ser = sers::WriteSerializer::new(to);
+        let scratch = sers::AllocScratch::new();
+        let shared = sers::SharedSerializeMap::new();
+        let mut ser = sers::CompositeSerializer::new(ser, scratch, shared);
+        ser.serialize_value(&self)?;
+        Ok(())
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> &ArchivedRoot {
+        unsafe { rkyv::archived_root::<Self>(bytes) }
+    }
+}
 
 #[derive(rkyv::Archive, rkyv::Serialize)]
 pub struct Path {
     pub points: Vec<[f32; 3]>,
 }
-
-/*#[derive(rkyv::Archive, rkyv::Serialize)]
-pub enum ImageCoding {
-    Flat,
-    Qoi,
-}
-
-#[derive(rkyv::Archive, rkyv::Serialize)]
-pub struct Image {
-    pub wide:   u16,
-    pub high:   u16,
-    pub coding: ImageCoding,
-    pub data: Vec<u8>,
-}*/
 
 #[derive(rkyv::Archive, rkyv::Serialize)]
 pub struct ImageSet {
@@ -133,47 +148,32 @@ pub struct Track {
 }
 
 #[derive(rkyv::Archive, rkyv::Serialize)]
+pub struct Font {
+    pub points: Vec<[f32; 2]>,
+    pub paths:  Vec<PathSeg>,
+    pub glyphs: Vec<Glyph>,
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize)]
 pub struct Glyph {
     pub start: u32,
-    pub count: u32,
     pub offset: [f32; 2],
     pub advance: f32,
 }
 
-#[derive(rkyv::Archive, rkyv::Serialize)]
-pub struct Font {
-    pub verts:  Vec<[f32; 3]>,
-    pub idxs:   Vec<u32>,
-    pub glyphs: HashMap<char, Glyph>,
-}
+pub const GLYPH_RANGES: &[std::ops::RangeInclusive<char>] = &[
+    ' ' ..= '~',
+    '©' ..= '©',
+    '®' ..= '®',
+    '™' ..= '™',
+];
 
 #[derive(rkyv::Archive, rkyv::Serialize)]
-pub struct Root {
-    pub tracks: HashMap<String, Track>,
-    pub ship_mset: ModelSet,
-    pub ship_iset: ImageSet,
-    pub fonts: HashMap<String, Font>,
+#[archive_attr(repr(u8))]
+pub enum PathSeg {
+    Start     = 0,
+    Line      = 1,
+    Quadratic = 2,
+    Cubic     = 3,
 }
-
-impl Root {
-    pub fn bake<W> (self, to: &mut W) -> anyhow::Result<()> where
-        W: std::io::Write,
-    {
-        use rkyv::ser::{serializers as sers, Serializer as _};
-        let ser = sers::WriteSerializer::new(to);
-        let scratch = sers::AllocScratch::new();
-        let shared = sers::SharedSerializeMap::new();
-        let mut ser = sers::CompositeSerializer::new(ser, scratch, shared);
-        ser.serialize_value(&self)?;
-        Ok(())
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> &ArchivedRoot {
-        unsafe { rkyv::archived_root::<Self>(bytes) }
-    }
-}
-
-pub type Bundle = ArchivedRoot;
-
-pub use util::unorm::*;
 
