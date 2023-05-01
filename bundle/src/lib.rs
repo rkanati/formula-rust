@@ -177,3 +177,14 @@ pub enum PathSeg {
     Cubic     = 3,
 }
 
+impl std::fmt::Debug for PathSeg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Start     => write!(f, "S"),
+            Self::Line      => write!(f, "L"),
+            Self::Quadratic => write!(f, "Q"),
+            Self::Cubic     => write!(f, "C"),
+        }
+    }
+}
+

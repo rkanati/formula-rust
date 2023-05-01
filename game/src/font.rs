@@ -15,9 +15,11 @@ pub struct Font {
     tex: GLuint,
 }
 
+#[derive(Debug, Clone, Copy)]
 struct Glyph {
     start: usize,
-    count: usize,
+    count_2d: usize,
+    count_3d: usize,
     advance: f32,
 }
 
@@ -93,14 +95,16 @@ impl Font {
                     let mut tess = lt::FillTessellator::new();
                     let mut mesh_builder = mesh_builder::MeshBuilder::default();
                     tess.tessellate_path(&path, &opts, &mut mesh_builder).unwrap();
-                    let idx_range = mesh_builder.bake(verts, idxs);
-                    let start = idx_range.start;
-                    let count = idx_range.end - start;
+                    let (start, end_2d, end_3d) = mesh_builder.bake(verts, idxs);
+                    let count_2d = end_2d - start;
+                    let count_3d = end_3d - start;
                     let advance = font.glyphs[glyph_i].advance;
-                    (ch, Glyph{start, count, advance})
+                    (ch, Glyph{start, count_2d, count_3d, advance})
                 }
             })
             .collect();
+
+        //log::trace!(target: "font", "glyphs: {glyphs:#?}");
 
         let vao = make_arrays(
             gl,
@@ -111,6 +115,13 @@ impl Font {
                 Attrib::ConstFloat3(uv::Vec3::one()),
             ]
         );
+
+        log::debug!(target: "font",
+            "built font with {} vertices, {} indices",
+            verts.len(), idxs.len());
+
+        //log::trace!(target: "font", "{verts:#?}");
+        //log::trace!(target: "font", "{idxs:#?}");
 
         Ok(Font{glyphs, vao, tex: blank_tex})
     }
@@ -131,10 +142,11 @@ impl Font {
             gl.BindTexture(gl::TEXTURE_2D, self.tex);
             for ch in test.chars() {
                 if let Some(glyph) = self.glyphs.get(&ch) {
+                    //log::trace!(target: "font", "'{ch}': {} indices", glyph.count);
                     gl.Uniform3f(4, pos.x, pos.y, pos.z);
                     gl.DrawElements(
                         gl::TRIANGLES,
-                        glyph.count as _,
+                        glyph.count_3d as _,
                         gl::UNSIGNED_INT,
                         (glyph.start * 4) as _
                     );
@@ -146,13 +158,10 @@ impl Font {
 
     pub fn bake_run(&self, anchor: Anchor, text: &str) -> TextRun {
         let run = text.chars()
-            .filter_map(|ch| {
-                let glyph = self.glyphs.get(&ch)?;
-                Some((glyph.start, glyph.count, glyph.advance))
-            })
+            .filter_map(|ch| self.glyphs.get(&ch).copied())
             .collect::<Vec<_>>();
         let w: f32 = run.iter().copied()
-            .map(|(_, _, adv)| adv)
+            .map(|g| g.advance)
             .sum();
         let off = match anchor {
             Anchor::LowerLeft => uv::Vec2::zero(),
@@ -188,6 +197,7 @@ mod mesh_builder {
     }
 
     #[repr(C)]
+    #[derive(Debug)]
     pub struct Vertex {
         pub position: [f32; 3],
         pub normal:   [f32; 3],
@@ -195,7 +205,7 @@ mod mesh_builder {
 
     impl MeshBuilder {
         pub fn bake(self, verts_out: &mut Vec<Vertex>, idxs_out: &mut Vec<u32>)
-            -> std::ops::Range<usize>
+            -> (usize, usize, usize)
         {
             let first_idx = idxs_out.len();
 
@@ -207,7 +217,7 @@ mod mesh_builder {
             };
 
             // front face first
-            let first_front_vert = self.verts.len() as u32;
+            let first_front_vert = verts_out.len() as u32;
             self.verts.iter()
                 .map(make_vertex(1.))
                 .collect_into(verts_out);
@@ -218,7 +228,7 @@ mod mesh_builder {
             let front_end = idxs_out.len();
 
             // back face
-            let first_back_vert = self.verts.len() as u32;
+            let first_back_vert = verts_out.len() as u32;
             self.verts.iter()
                 .map(make_vertex(-1.))
                 .collect_into(verts_out);
@@ -227,7 +237,7 @@ mod mesh_builder {
                 .flat_map(|&[a, b, c]| [c, b, a].map(|i| first_back_vert + i))
                 .collect_into(idxs_out);
 
-            let first_sides_vert = self.verts.len() as u32;
+            let first_sides_vert = verts_out.len() as u32;
 
             // sides
             let mut smooth_pairs = HashMap::<u32, u32>::new();
@@ -269,8 +279,7 @@ mod mesh_builder {
                 idxs_out.extend_from_slice(&[ai, bi, bi+1, ai, bi+1, ai+1]);
             }
 
-            let end_idx = idxs_out.len();
-            first_idx .. front_end//end_idx
+            (first_idx, front_end, idxs_out.len())
         }
     }
 
@@ -405,12 +414,29 @@ pub enum Anchor {
 pub struct TextRun {
     vao: GLuint,
     tex: GLuint,
-    run: Vec<(usize, usize, f32)>,
+    run: Vec<Glyph>,
     off: uv::Vec2,
 }
 
 impl TextRun {
-    pub fn draw(&self, gl: &Gl, shader: &BasicShader, scale: f32, z_scale: f32, mut pos: uv::Vec3) {
+    pub fn draw_2d(&self, gl: &Gl, shader: &BasicShader, scale: f32, pos: uv::Vec3) {
+        self.draw(gl, shader, scale, None, pos);
+    }
+
+    pub fn draw_3d(&self, gl: &Gl, shader: &BasicShader, (scale, z_scale): (f32, f32), pos: uv::Vec3) {
+        self.draw(gl, shader, scale, Some(z_scale), pos);
+    }
+
+    pub fn draw(&self,
+        gl: &Gl, shader: &BasicShader,
+        scale: f32, z_scale: Option<f32>,
+        mut pos: uv::Vec3,
+    ) {
+        let (flat, z_scale) = match z_scale {
+            Some(a) => (false, a),
+            None    => (true,  1.)
+        };
+
         shader.setup(gl, |params| params.1 = [scale, scale, z_scale * scale].into());
         pos += self.off.xyz() * scale;
 
@@ -418,15 +444,16 @@ impl TextRun {
             gl.BindVertexArray(self.vao);
             gl.BindTexture(gl::TEXTURE_2D, self.tex);
 
-            for &(start, count, advance) in &self.run {
+            for &glyph in &self.run {
+                let count = if flat {glyph.count_2d} else {glyph.count_3d};
                 shader.set_translate(gl, pos);
                 gl.DrawElements(
                     gl::TRIANGLES,
                     count as _,
                     gl::UNSIGNED_INT,
-                    (start * 4) as _
+                    (glyph.start * 4) as _
                 );
-                pos.x += scale * advance;
+                pos.x += scale * glyph.advance;
             }
         }
     }

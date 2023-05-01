@@ -1,0 +1,22 @@
+[package]
+name = "qoit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror = "1"
+image = { version = "0.24", optional = true }
+bytemuck = { version = "1", optional = true }
+
+[[bin]]
+name = "qoitd"
+required-features = ["bindeps"]
+
+[[bin]]
+name = "qoitc"
+required-features = ["bindeps"]
+
+[features]
+default = []
+bindeps = ["dep:image", "dep:bytemuck"]
+

@@ -16,8 +16,7 @@ lz4_flex = "0.9"
 pack-rects = { path = "/home/sabi/projects/pack-rects" }
 #pack-rects = { git = "file:/home/sabi/projects/pack-rects", rev = "c79581c" }
 pixmap = { path = "../pixmap" }
-qoit = { path = "../../qoit" }
-#rapid-qoi = "0.6"
+qoit = { path = "../qoit" }
 rkyv = "0.7"
 thiserror = "1"
 trianglyph = { git = "file:/home/sabi/projects/trianglyph", rev = "73eb0bd" }

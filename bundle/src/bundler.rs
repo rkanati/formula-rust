@@ -36,7 +36,8 @@ fn make_music(bundler: &mut Bundler, music_dir: &Path) -> Anyhow<()> {
     log::info!("making music");
     for entry in bundler.asset_dir(music_dir).read_dir_utf8()? {
         let entry = entry?;
-        if !entry.file_type()?.is_dir() {continue}
+        if !entry.file_type()?.is_file() {continue}
+        log::debug!("processing '{}'", entry.file_name());
         let Some(name) = entry.file_name().strip_suffix(".opus") else {continue};
         bundler.aux_blob(&format!("music/{name}"), entry.path())?;
     }
@@ -102,6 +103,7 @@ fn make_fonts(bundler: &mut Bundler, fonts_dir: &Path)
         if !entry.file_type()?.is_file() {continue}
         let Some(name) = entry.path().file_stem() else {continue};
         let ttf = bundler.load(entry.path())?;
+        log::debug!("processing '{name}'");
         let font = match font::make_font(&ttf) {
             Err(font::Error::NotAFont) => continue,
             Err(font::Error::Other(e)) => return Err(e),
@@ -149,12 +151,14 @@ impl Bundler {
         self.config.wipeout_dir.join(rel)
     }
 
-    fn bake(self, f: impl FnOnce(HashMap<String, u64>) -> crate::Root) -> Anyhow<()> {
+    fn bake(mut self, f: impl FnOnce(HashMap<String, u64>) -> crate::Root) -> Anyhow<()> {
         let root = f(self.aux_tab);
         let mut buffer = Vec::with_capacity(128 << 20);
         root.bake(&mut buffer)?;
         let compressed = lz4_flex::compress_prepend_size(&buffer);
         std::fs::write(self.config.out_path, compressed)?;
+        use std::io::Write as _;
+        self.aux_file.flush()?;
         Ok(())
     }
 
@@ -208,7 +212,8 @@ impl Bundler {
         use std::io::Seek as _;
         let start = self.aux_file.stream_position()?;
         let mut reader = std::io::BufReader::with_capacity(0x10_0000, std::fs::File::open(path)?);
-        std::io::copy(&mut reader, &mut self.aux_file)?;
+        let size = std::io::copy(&mut reader, &mut self.aux_file)?;
+        log::debug!("added {} KiB aux blob", size >> 10);
         self.aux_tab.insert(name.into(), start);
         Ok(())
     }

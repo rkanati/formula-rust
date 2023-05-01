@@ -24,7 +24,7 @@ impl Atlas {
             log::debug!(target: "atlas", "decoding {} textures", iset.sizes.len());
             let pixmaps = iset.sizes.iter().copied().enumerate()
                 .map(|(i, (w, h))| {
-                    log::debug!(target: "atlas", "texture {i} size: {w} {h}");
+                    log::trace!(target: "atlas", "texture {i} size: {w} {h}");
                     let mut pixels = Vec::new();
                     pixels.resize(w as usize * h as usize, Rgba::TRANSPARENT);
                     input = qoi_state.decode_some(bytemuck::cast_slice_mut(&mut pixels), input)?;

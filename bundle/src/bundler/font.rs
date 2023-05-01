@@ -12,11 +12,20 @@ impl From<anyhow::Error> for Error {
 }
 
 pub fn make_font(ttf: &[u8]) -> Result<crate::Font, Error> {
-    let font = ttf_parser::Face::parse(ttf, 0);
-    if let Err(ttf_parser::FaceParsingError::UnknownMagic) = font {
-        return Err(Error::NotAFont);
-    }
-    let font = font.map_err(|e| Error::Other(e.into()))?;
+    let font = ttf_parser::Face::parse(ttf, 0)
+        .map_err(|e| match e {
+            ttf_parser::FaceParsingError::UnknownMagic => Error::NotAFont,
+            e                                          => Error::Other(e.into()),
+        })?;
+
+    let name = font.names().into_iter()
+        .filter(|n| {
+            n.platform_id == ttf_parser::PlatformId::Macintosh &&
+            n.name_id == ttf_parser::name::name_id::FULL_NAME
+        })
+        .map(|n| String::from_utf8(n.name.to_vec()).unwrap_or("<not utf-8>".into()))
+        .next().unwrap_or("<unknown>".into());
+    log::info!("baking '{name}'");
 
     let mut points = Vec::new();
     let mut paths  = Vec::new();
@@ -35,8 +44,12 @@ pub fn make_font(ttf: &[u8]) -> Result<crate::Font, Error> {
             points: &mut points,
             paths:  &mut paths
         };
+        log::debug!(target: "font", "outliner scale: {}", outliner.scale);
 
-        let Some(_bbox) = font.outline_glyph(glyph_id, &mut outliner) else {continue};
+        let Some(_bbox) = font.outline_glyph(glyph_id, &mut outliner) else {
+            log::debug!(target: "font", "glyph for '{ch}' has no outline!");
+            continue
+        };
 
         let scale = 1. / font.units_per_em() as f32;
         let advance = font.glyph_hor_advance(glyph_id)
@@ -44,6 +57,9 @@ pub fn make_font(ttf: &[u8]) -> Result<crate::Font, Error> {
 
         glyphs.last_mut().unwrap().advance = advance;
     }
+
+    log::debug!(target: "font",
+        "baked font with {} path elements over {} points: {paths:?}", paths.len(), points.len());
 
     Ok(crate::Font{points, paths, glyphs})
 }

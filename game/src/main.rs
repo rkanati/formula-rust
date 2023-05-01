@@ -27,7 +27,10 @@ use {
 const VFOV_DEG: f32 = 57.;
 
 fn main() {
-    log_init(log::LevelFilter::Debug);
+    log_init(
+        if cfg!(debug_assertions) { log::LevelFilter::Debug }
+        else                      { log::LevelFilter::Warn }
+    );
 
     // process arguments
     let track_name = std::env::args().nth(1);
@@ -58,6 +61,9 @@ fn main() {
         log::debug!("font data size: {fonts_size}");*/
 
         let aux = include_bytes!(concat!(env!("BUNDLE_PATH"), "-aux"));
+        log::info!("aux bundle: {} MiB", aux.len() >> 20);
+        let sum = aux.into_iter().copied().reduce(u8::wrapping_add).unwrap();
+        log::info!("thing: {sum}");
 
         bundle
     };
@@ -108,10 +114,12 @@ fn main() {
         .into_iter()
         .map(|name| Font::load(&display, &bundle.fonts[name], blank_tex))
         .collect::<Result<Vec<_>, _>>().unwrap();
+    let [amalgama, font2097, fusion, superphonix, wo3, x2] = &fonts[..]
+        else { panic!() };
 
-    let _title = fonts[0].bake_run(font::Anchor::Center, "formula'rs\"");
-    let silly = fonts[0].bake_run(font::Anchor::Center, "Hold © tight!");
-    let man = fonts[0].bake_run(font::Anchor::Center, "©");
+    let title = x2.bake_run(font::Anchor::Center, "formula'rs\"");
+    let silly = amalgama.bake_run(font::Anchor::Center, "Hold © tight!");
+    let man = amalgama.bake_run(font::Anchor::Center, "©");
 
     //let mut cam = Camera::from(FlythruCam::new(&track.graph[..]));
     let mut cam = Camera::from(DebugCam::new());
@@ -246,8 +254,8 @@ fn main() {
                     gl.Disable(gl::DEPTH_TEST);
                     shader.select(gl, ui_to_clip);
                     gl.VertexAttrib4f(1, 1., 1., 0., 1.);
-                    //title.draw(gl, 0.3, 0.1, uv::Vec3::new(0., 0.7, 0.));
-                    //silly.draw(gl, &shader, 0.2, 0.1, uv::Vec3::new(0., -2.8, 2.));
+                    title.draw_2d(gl, &shader, 0.3, uv::Vec3::new(0., 0.7, 0.));
+                    silly.draw_2d(gl, &shader, 0.2, uv::Vec3::new(0., -2.8, 2.));
                 }
 
                 display.finish_frame();
